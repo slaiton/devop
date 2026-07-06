@@ -1,0 +1,17 @@
+{
+  "name": "devsentinel",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "libs/shared/*",
+    "libs/domain/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "db:migrate": "npm run migrate --workspace=@devsentinel/database"
+  }
+}
