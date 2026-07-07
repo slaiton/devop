@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { AuthModule } from './modules/auth/auth.module';
 import { GithubWebhooksModule } from './modules/github-webhooks/github-webhooks.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     AuthModule,
     GithubWebhooksModule,
     DashboardModule,
+    HealthModule,
   ],
 })
 export class AppModule {}

@@ -1,0 +1,36 @@
+# Control de versiones
+.git
+.gitignore
+
+# Dependencias (se instalan dentro del build)
+node_modules
+**/node_modules
+
+# Artefactos de build
+**/dist
+**/.next
+**/coverage
+**/.nyc_output
+
+# Secretos y configuración local
+.env
+.env.*
+!.env.example
+
+# Documentación
+docs/
+*.md
+!apps/*/README.md
+
+# Archivos de IDE y sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+
+# Testing
+**/*.test.ts
+**/*.spec.ts
+**/__tests__

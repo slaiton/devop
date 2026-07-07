@@ -21,11 +21,14 @@ RUN npm run build --workspace=@devsentinel/database \
 FROM node:20-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /repo
-COPY --from=build /repo/node_modules node_modules
-COPY --from=build /repo/package.json package.json
-COPY --from=build /repo/libs libs
-COPY --from=build /repo/apps/api/dist apps/api/dist
-COPY --from=build /repo/apps/api/package.json apps/api/package.json
+COPY --from=build --chown=node:node /repo/node_modules node_modules
+COPY --from=build --chown=node:node /repo/package.json package.json
+COPY --from=build --chown=node:node /repo/libs libs
+COPY --from=build --chown=node:node /repo/apps/api/dist apps/api/dist
+COPY --from=build --chown=node:node /repo/apps/api/package.json apps/api/package.json
+USER node
 WORKDIR /repo/apps/api
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget -qO- http://localhost:3000/api/health || exit 1
 CMD ["node", "dist/main.js"]

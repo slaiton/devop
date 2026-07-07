@@ -1,0 +1,211 @@
+# docker-compose.prod.yml — configuración lista para producción
+#
+# Uso:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Variables obligatorias (definir en el entorno del host o en un .env.prod):
+#   POSTGRES_PASSWORD, APP_DB_PASSWORD, DATABASE_URL, MIGRATIONS_DATABASE_URL
+#   JWT_SECRET, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_APP_WEBHOOK_SECRET
+#   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_OAUTH_CALLBACK_URL
+#   GITHUB_APP_SLUG, LLM_PROVIDER_API_KEY, PUBLIC_DOMAIN, PUBLIC_WEB_ORIGIN
+#
+# Para CI/CD con imágenes pre-construidas:
+#   IMAGE_REPO=ghcr.io/<org>  VERSION=<git-sha>
+#   → docker compose -f docker-compose.prod.yml pull web api worker
+#   → docker compose -f docker-compose.prod.yml up -d --no-build
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3 QUIC
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN}
+    networks:
+      - devsentinel_net
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  web:
+    build: ./apps/web
+    image: ${IMAGE_REPO:-devsentinel}/devsentinel-web:${VERSION:-latest}
+    restart: always
+    environment:
+      NODE_ENV: production
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:3000}
+    networks:
+      - devsentinel_net
+    depends_on:
+      api:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: ${IMAGE_REPO:-devsentinel}/devsentinel-api:${VERSION:-latest}
+    restart: always
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      MIGRATIONS_DATABASE_URL: ${MIGRATIONS_DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET}
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
+      GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET}
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID}
+      GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET}
+      GITHUB_OAUTH_CALLBACK_URL: ${GITHUB_OAUTH_CALLBACK_URL}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG}
+      PUBLIC_WEB_ORIGIN: ${PUBLIC_WEB_ORIGIN}
+    networks:
+      - devsentinel_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    image: ${IMAGE_REPO:-devsentinel}/devsentinel-worker:${VERSION:-latest}
+    restart: always
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
+      LLM_PROVIDER_BASE_URL: ${LLM_PROVIDER_BASE_URL:-https://api.together.xyz/v1}
+      LLM_PROVIDER_API_KEY: ${LLM_PROVIDER_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen2.5-Coder-32B-Instruct}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - devsentinel_workspace:/workspace
+    networks:
+      - devsentinel_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: always
+    environment:
+      POSTGRES_DB: devsentinel
+      POSTGRES_USER: devsentinel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    networks:
+      - devsentinel_net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devsentinel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: >
+      redis-server
+      --save 60 1
+      --save 300 1
+      --loglevel warning
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - devsentinel_net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+networks:
+  devsentinel_net:
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  devsentinel_workspace:

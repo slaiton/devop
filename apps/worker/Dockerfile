@@ -1,6 +1,7 @@
 FROM node:20-slim AS deps
 WORKDIR /repo
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates wget \
+    && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
 COPY tsconfig.base.json ./
 COPY apps/worker/package.json apps/worker/
@@ -23,7 +24,8 @@ RUN npm run build --workspace=@devsentinel/database \
  && npm run build --workspace=@devsentinel/worker
 
 FROM node:20-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates wget \
+    && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 WORKDIR /repo
 COPY --from=build /repo/node_modules node_modules
@@ -32,4 +34,9 @@ COPY --from=build /repo/libs libs
 COPY --from=build /repo/apps/worker/dist apps/worker/dist
 COPY --from=build /repo/apps/worker/package.json apps/worker/package.json
 WORKDIR /repo/apps/worker
+# Worker corre como root porque necesita acceso a /var/run/docker.sock para
+# lanzar contenedores sandbox. El aislamiento real lo provee el daemon de Docker.
+EXPOSE 3001
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget -qO- http://localhost:3001/health || exit 1
 CMD ["node", "dist/main.js"]
