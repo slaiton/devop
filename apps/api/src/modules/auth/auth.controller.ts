@@ -42,7 +42,12 @@ export class AuthController {
     }
     res.clearCookie('oauth_state');
 
-    const githubUser = await this.authService.exchangeCodeForUser(code);
+    let githubUser;
+    try {
+      githubUser = await this.authService.exchangeCodeForUser(code);
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
     const userId = await this.authService.upsertUser(githubUser);
 
     const organizationId = await this.authService.findOrganizationForLogin(githubUser.login);
