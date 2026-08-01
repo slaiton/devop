@@ -21,7 +21,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp"   # HTTP/3 QUIC
+      - "443:443/udp" # HTTP/3 QUIC
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -61,7 +61,7 @@ services:
           cpus: "1"
           memory: 512M
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1" ]
       interval: 30s
       timeout: 10s
       start_period: 30s
@@ -102,7 +102,7 @@ services:
           cpus: "1"
           memory: 512M
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1" ]
       interval: 30s
       timeout: 10s
       start_period: 60s
@@ -139,7 +139,7 @@ services:
           cpus: "2"
           memory: 2G
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1" ]
       interval: 30s
       timeout: 10s
       start_period: 60s
@@ -154,7 +154,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD}
     ports:
-    - "5433:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -170,7 +170,7 @@ services:
           cpus: "1"
           memory: 1G
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U devsentinel"]
+      test: [ "CMD-SHELL", "pg_isready -U devsentinel" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -179,12 +179,7 @@ services:
     image: redis:7-alpine
     restart: always
     command: >
-      redis-server
-      --save 60 1
-      --save 300 1
-      --loglevel warning
-      --maxmemory 256mb
-       --maxmemory-policy noeviction
+      redis-server --save 60 1 --save 300 1 --loglevel warning --maxmemory 256mb --maxmemory-policy noeviction
     volumes:
       - redis_data:/data
     networks:
@@ -197,7 +192,7 @@ services:
           cpus: "0.5"
           memory: 256M
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 5s
       retries: 10
