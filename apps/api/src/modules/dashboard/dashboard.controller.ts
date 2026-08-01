@@ -1,4 +1,4 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
 import { CurrentOrg } from '../../common/currentOrg.decorator';
 import { DashboardService } from './dashboard.service';
@@ -16,6 +16,20 @@ export class DashboardController {
   @Get('repositories/:repositoryId/pull-requests')
   listPullRequests(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
     return this.dashboardService.listPullRequests(orgId, repositoryId);
+  }
+
+  @Get('repositories/:repositoryId/pushes')
+  listPushes(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
+    return this.dashboardService.listPushes(orgId, repositoryId);
+  }
+
+  @Post('repositories/:repositoryId/pull-requests/:pullRequestId/merge')
+  mergePullRequest(
+    @CurrentOrg() orgId: string,
+    @Param('repositoryId') repositoryId: string,
+    @Param('pullRequestId') pullRequestId: string,
+  ) {
+    return this.dashboardService.mergePullRequest(orgId, repositoryId, pullRequestId);
   }
 
   @Get('review-runs/:reviewRunId')

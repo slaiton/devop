@@ -46,4 +46,5 @@ export interface GitProviderPort {
   postReviewComment(params: ReviewCommentParams): Promise<{ commentId: number }>;
   postSummaryComment(params: SummaryCommentParams): Promise<void>;
   setCheckRunStatus(params: CheckRunParams): Promise<void>;
+  mergePullRequest(params: PullRequestRef): Promise<{ merged: boolean }>;
 }

@@ -96,6 +96,16 @@ export class GithubAdapter implements GitProviderPort {
     });
   }
 
+  async mergePullRequest(params: PullRequestRef): Promise<{ merged: boolean }> {
+    const client = this.getInstallationClient(params.installationId);
+    const { data } = await client.pulls.merge({
+      owner: params.owner,
+      repo: params.repo,
+      pull_number: params.pullNumber,
+    });
+    return { merged: data.merged };
+  }
+
   private getInstallationClient(installationId: number): Octokit {
     return new Octokit({
       authStrategy: createAppAuth,
