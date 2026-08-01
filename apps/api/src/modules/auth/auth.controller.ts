@@ -26,11 +26,18 @@ export class AuthController {
   @Get('callback')
   async callback(
     @Query('code') code: string,
-    @Query('state') state: string,
+    @Query('state') state: string | undefined,
+    @Query('setup_action') setupAction: string | undefined,
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    if (!code || !state || state !== req.cookies?.oauth_state) {
+    // GitHub omite `state` cuando el callback llega desde la pantalla de
+    // instalación/actualización de la App (setup_action=install|update) en vez
+    // del /login/oauth/authorize que nosotros iniciamos; ahí no hay CSRF que
+    // validar porque el `code` de un solo uso ya ata la respuesta a nuestro
+    // client_secret.
+    const isInstallSetup = setupAction === 'install' || setupAction === 'update';
+    if (!code || (!isInstallSetup && (!state || state !== req.cookies?.oauth_state))) {
       throw new BadRequestException('invalid OAuth state');
     }
     res.clearCookie('oauth_state');
