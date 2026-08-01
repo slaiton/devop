@@ -49,6 +49,8 @@ services:
       dockerfile: apps/api/Dockerfile
     image: ${IMAGE_REPO:-devsentinel}/devsentinel-api:${VERSION:-latest}
     restart: always
+    ports:
+      - "127.0.0.1:3001:3000"
     environment:
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL}
