@@ -15,36 +15,12 @@
 #   → docker compose -f docker-compose.prod.yml up -d --no-build
 
 services:
-  caddy:
-    image: caddy:2-alpine
-    restart: always
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp" # HTTP/3 QUIC
-    volumes:
-      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    environment:
-      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN}
-    networks:
-      - devsentinel_net
-    depends_on:
-      api:
-        condition: service_healthy
-      web:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 128M
-
   web:
     build: ./apps/web
     image: ${IMAGE_REPO:-devsentinel}/devsentinel-web:${VERSION:-latest}
     restart: always
+    ports:
+    - "127.0.0.1:3000:3000"
     environment:
       NODE_ENV: production
       API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:3000}
@@ -203,6 +179,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
-  caddy_data:
-  caddy_config:
   devsentinel_workspace:
