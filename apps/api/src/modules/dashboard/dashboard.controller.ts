@@ -34,6 +34,39 @@ export class DashboardController {
     return this.dashboardService.updateRepositorySettings(orgId, repositoryId, body);
   }
 
+  @Get('repositories/:repositoryId/project-profile')
+  getProjectProfile(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
+    return this.dashboardService.getProjectProfile(orgId, repositoryId);
+  }
+
+  @Patch('repositories/:repositoryId/project-profile')
+  updateProjectProfile(
+    @CurrentOrg() orgId: string,
+    @Param('repositoryId') repositoryId: string,
+    @Body()
+    body: {
+      language?: string;
+      framework?: string;
+      frameworkVersion?: string;
+      runtime?: string;
+      database?: string;
+      architectureStyle?: string;
+      testingStrategy?: string;
+      notes?: string;
+    },
+  ) {
+    return this.dashboardService.updateProjectProfile(orgId, repositoryId, body);
+  }
+
+  @Post('repositories/:repositoryId/review-runs/:reviewRunId/notify')
+  notifyReviewRun(
+    @CurrentOrg() orgId: string,
+    @Param('repositoryId') repositoryId: string,
+    @Param('reviewRunId') reviewRunId: string,
+  ) {
+    return this.dashboardService.notifyReviewRun(orgId, repositoryId, reviewRunId);
+  }
+
   @Get('repositories/:repositoryId/pull-requests')
   listPullRequests(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
     return this.dashboardService.listPullRequests(orgId, repositoryId);

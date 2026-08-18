@@ -65,6 +65,11 @@ services:
       GITHUB_OAUTH_CALLBACK_URL: ${GITHUB_OAUTH_CALLBACK_URL}
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG}
       PUBLIC_WEB_ORIGIN: ${PUBLIC_WEB_ORIGIN}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     networks:
       - devsentinel_net
     depends_on:

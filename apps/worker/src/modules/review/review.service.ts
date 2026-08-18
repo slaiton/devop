@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { withTenant } from '@devsentinel/database';
 import type { GitProviderPort } from '@devsentinel/git-providers';
-import type { LlmPort, ReviewResult } from '@devsentinel/llm-port';
+import type { LlmPort, ProjectProfile, ReviewResult } from '@devsentinel/llm-port';
 import type { ReviewJobPayload } from '@devsentinel/event-contracts';
 import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
@@ -67,12 +67,15 @@ export class ReviewService {
         },
       );
 
+      const projectProfile = await this.getProjectProfile(payload.organizationId, payload.repositoryId);
+
       const result = await this.llm.reviewDiff({
         repositoryFullName: `${payload.owner}/${payload.repo}`,
         commitSha: payload.commitSha,
         diff,
         staticFindings,
         retrievedContext,
+        projectProfile,
       });
 
       const config = await this.getQualityGateConfig(payload.organizationId, payload.repositoryId);
@@ -167,6 +170,29 @@ export class ReviewService {
       conclusion: shouldBlock ? 'failure' : 'success',
       title: shouldBlock ? 'Bloqueado por DevSentinel AI' : 'Aprobado por DevSentinel AI',
       summary: result.summary,
+    });
+  }
+
+  private async getProjectProfile(organizationId: string, repositoryId: string): Promise<ProjectProfile | undefined> {
+    return withTenant(organizationId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT language, framework, framework_version, runtime, database, architecture_style, testing_strategy, notes
+         FROM project_profiles
+         WHERE repository_id = $1`,
+        [repositoryId],
+      );
+      const row = rows[0];
+      if (!row) return undefined;
+      return {
+        language: row.language,
+        framework: row.framework,
+        frameworkVersion: row.framework_version,
+        runtime: row.runtime,
+        database: row.database,
+        architectureStyle: row.architecture_style,
+        testingStrategy: row.testing_strategy,
+        notes: row.notes,
+      };
     });
   }
 

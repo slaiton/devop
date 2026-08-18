@@ -1,12 +1,15 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { withTenant } from '@devsentinel/database';
 import { GithubAdapter } from '@devsentinel/git-providers';
+import { EmailService } from '../../common/email.service';
+
+const SEVERITY_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 
 @Injectable()
 export class DashboardService {
   private readonly adapter: GithubAdapter;
 
-  constructor() {
+  constructor(private readonly emailService: EmailService) {
     this.adapter = new GithubAdapter({
       appId: process.env.GITHUB_APP_ID ?? '',
       privateKey: (process.env.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
@@ -94,7 +97,8 @@ export class DashboardService {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `SELECT rr.id, rr.commit_sha, rr.branch, rr.status, rr.quality_score, rr.risk_level,
-                rr.gate_decision, rr.started_at, rr.completed_at,
+                rr.gate_decision, rr.author_name, rr.author_email, rr.notified_at,
+                rr.started_at, rr.completed_at,
                 (SELECT count(*) FROM findings f WHERE f.review_run_id = rr.id AND f.blocking) AS blocking_count,
                 p.id AS promotion_id, p.status AS promotion_status
          FROM review_runs rr
@@ -105,6 +109,124 @@ export class DashboardService {
         [repositoryId],
       );
       return rows;
+    });
+  }
+
+  async getProjectProfile(orgId: string, repositoryId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT language, framework, framework_version, runtime, database, architecture_style, testing_strategy, notes
+         FROM project_profiles WHERE repository_id = $1`,
+        [repositoryId],
+      );
+      return (
+        rows[0] ?? {
+          language: null,
+          framework: null,
+          framework_version: null,
+          runtime: null,
+          database: null,
+          architecture_style: null,
+          testing_strategy: null,
+          notes: null,
+        }
+      );
+    });
+  }
+
+  async updateProjectProfile(
+    orgId: string,
+    repositoryId: string,
+    profile: {
+      language?: string;
+      framework?: string;
+      frameworkVersion?: string;
+      runtime?: string;
+      database?: string;
+      architectureStyle?: string;
+      testingStrategy?: string;
+      notes?: string;
+    },
+  ) {
+    await withTenant(orgId, async (client) => {
+      await client.query(
+        `INSERT INTO project_profiles
+           (organization_id, repository_id, language, framework, framework_version, runtime, database, architecture_style, testing_strategy, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (repository_id) DO UPDATE SET
+           language = $3, framework = $4, framework_version = $5, runtime = $6, database = $7,
+           architecture_style = $8, testing_strategy = $9, notes = $10, updated_at = now()`,
+        [
+          orgId,
+          repositoryId,
+          profile.language ?? null,
+          profile.framework ?? null,
+          profile.frameworkVersion ?? null,
+          profile.runtime ?? null,
+          profile.database ?? null,
+          profile.architectureStyle ?? null,
+          profile.testingStrategy ?? null,
+          profile.notes ?? null,
+        ],
+      );
+    });
+    return this.getProjectProfile(orgId, repositoryId);
+  }
+
+  async notifyReviewRun(orgId: string, repositoryId: string, reviewRunId: string): Promise<{ sent: true; to: string }> {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT rr.commit_sha, rr.branch, rr.gate_decision, rr.quality_score, rr.risk_level, rr.summary,
+                rr.author_name, rr.author_email, rr.trigger
+         FROM review_runs rr
+         WHERE rr.id = $1 AND rr.repository_id = $2`,
+        [reviewRunId, repositoryId],
+      );
+      const run = rows[0];
+      if (!run) throw new NotFoundException('review run not found');
+      if (run.trigger !== 'push') throw new BadRequestException('solo se pueden notificar pushes');
+      if (!run.author_email) {
+        throw new BadRequestException('este commit no tiene un email de autor disponible para notificar');
+      }
+
+      const { rows: findingRows } = await client.query(
+        `SELECT category, severity, file_path, title, explanation, blocking
+         FROM findings WHERE review_run_id = $1`,
+        [reviewRunId],
+      );
+      const findings = findingRows.sort((a, b) => {
+        if (a.blocking !== b.blocking) return a.blocking ? -1 : 1;
+        return (SEVERITY_ORDER[b.severity] ?? 0) - (SEVERITY_ORDER[a.severity] ?? 0);
+      });
+
+      const publicOrigin = process.env.PUBLIC_WEB_ORIGIN ?? '';
+      const statusLabel = run.gate_decision === 'apto' ? '✓ APTO' : '❌ NO APTO';
+      const findingsHtml = findings.length
+        ? `<ul>${findings
+            .map(
+              (f) =>
+                `<li><strong>[${f.severity.toUpperCase()}${f.blocking ? ' — bloqueante' : ''}] ${f.title}</strong> (${f.file_path})<br/>${f.explanation}</li>`,
+            )
+            .join('')}</ul>`
+        : '<p>Sin hallazgos.</p>';
+
+      const html = [
+        `<p>Hola ${run.author_name ?? ''},</p>`,
+        `<p>DevSentinel AI analizó tu push a <strong>${run.branch}</strong> (commit <code>${String(run.commit_sha).slice(0, 7)}</code>): <strong>${statusLabel}</strong>.</p>`,
+        `<p>Score: ${run.quality_score ?? '-'} — Riesgo: ${run.risk_level ?? '-'}</p>`,
+        run.summary ? `<p>${run.summary}</p>` : '',
+        findingsHtml,
+        publicOrigin ? `<p><a href="${publicOrigin}/repositories/${repositoryId}">Ver detalle en DevSentinel</a></p>` : '',
+      ].join('\n');
+
+      await this.emailService.send({
+        to: run.author_email,
+        subject: `DevSentinel AI — ${statusLabel} en ${run.branch} (${String(run.commit_sha).slice(0, 7)})`,
+        html,
+      });
+
+      await client.query('UPDATE review_runs SET notified_at = now() WHERE id = $1', [reviewRunId]);
+      return { sent: true, to: run.author_email as string };
     });
   }
 

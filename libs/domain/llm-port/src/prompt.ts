@@ -37,9 +37,35 @@ export function buildSinglePassReviewPrompt(input: ReviewDiffInput) {
         .join('\n\n')
     : '(sin contexto adicional recuperado)';
 
+  const profile = input.projectProfile;
+  const hasProfile = profile && Object.values(profile).some((v) => v);
+  const profileText = hasProfile
+    ? [
+        profile.language && `Lenguaje: ${profile.language}`,
+        profile.framework && `Framework: ${profile.framework}`,
+        profile.frameworkVersion && `Versión del framework: ${profile.frameworkVersion}`,
+        profile.runtime && `Runtime: ${profile.runtime}`,
+        profile.database && `Base de datos: ${profile.database}`,
+        profile.architectureStyle && `Estilo de arquitectura: ${profile.architectureStyle}`,
+        profile.testingStrategy && `Estrategia de testing: ${profile.testingStrategy}`,
+        profile.notes && `Notas: ${profile.notes}`,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : null;
+
   const userContent = [
     `Repositorio: ${input.repositoryFullName}`,
     `Commit: ${input.commitSha}`,
+    ...(profileText
+      ? [
+          '',
+          '## Perfil del proyecto declarado',
+          'Calibra tus hallazgos y expectativas de convenciones contra este stack real — no',
+          'apliques criterios genéricos ni de otro lenguaje/framework distinto al declarado.',
+          profileText,
+        ]
+      : []),
     '',
     '## Diff',
     '```diff',

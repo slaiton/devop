@@ -3,6 +3,8 @@ import Link from 'next/link';
 import { MergeButton } from './MergeButton';
 import { RequestPromotionButton, PromotionDecisionButtons } from './PromotionActions';
 import { RepoSettingsForm } from './RepoSettingsForm';
+import { NotifyButton } from './NotifyButton';
+import { ProjectProfileForm } from './ProjectProfileForm';
 
 interface PullRequestRow {
   id: string;
@@ -28,6 +30,9 @@ interface PushRow {
   blocking_count: number;
   promotion_id: string | null;
   promotion_status: string | null;
+  author_name: string | null;
+  author_email: string | null;
+  notified_at: string | null;
   started_at: string;
 }
 
@@ -48,6 +53,17 @@ interface RepoSettings {
   promotion_target_branch: string;
 }
 
+interface ProjectProfileRow {
+  language: string | null;
+  framework: string | null;
+  framework_version: string | null;
+  runtime: string | null;
+  database: string | null;
+  architecture_style: string | null;
+  testing_strategy: string | null;
+  notes: string | null;
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
   const cookieHeader = cookies().toString();
   const res = await fetch(`${process.env.API_INTERNAL_URL}/api${path}`, {
@@ -60,11 +76,12 @@ async function fetchJson<T>(path: string): Promise<T> {
 
 export default async function RepositoryPullRequestsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const [pullRequests, pushes, promotions, settings] = await Promise.all([
+  const [pullRequests, pushes, promotions, settings, projectProfile] = await Promise.all([
     fetchJson<PullRequestRow[]>(`/dashboard/repositories/${id}/pull-requests`),
     fetchJson<PushRow[]>(`/dashboard/repositories/${id}/pushes`),
     fetchJson<PromotionRow[]>(`/dashboard/repositories/${id}/promotions`),
     fetchJson<RepoSettings>(`/dashboard/repositories/${id}/settings`),
+    fetchJson<ProjectProfileRow>(`/dashboard/repositories/${id}/project-profile`),
   ]);
 
   const pendingPromotions = promotions.filter((p) => p.status === 'pending');
@@ -177,18 +194,39 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
                   {run.risk_level ? <span className={`badge badge-${run.risk_level}`}>{run.risk_level}</span> : '-'}
                 </p>
                 {run.promotion_id && <p>Promoción: {run.promotion_status}</p>}
-                {canPromote && (
-                  <RequestPromotionButton
-                    repositoryId={id}
-                    reviewRunId={run.id}
-                    targetBranch={settings.promotion_target_branch}
-                  />
-                )}
+                {run.notified_at && <p>✉️ Notificado el {new Date(run.notified_at).toLocaleString()}</p>}
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  {run.author_email && !run.notified_at && (
+                    <NotifyButton repositoryId={id} reviewRunId={run.id} authorEmail={run.author_email} />
+                  )}
+                  {canPromote && (
+                    <RequestPromotionButton
+                      repositoryId={id}
+                      reviewRunId={run.id}
+                      targetBranch={settings.promotion_target_branch}
+                    />
+                  )}
+                </div>
               </div>
             );
           })}
         </div>
       )}
+
+      <h1>Perfil del proyecto</h1>
+      <ProjectProfileForm
+        repositoryId={id}
+        initial={{
+          language: projectProfile.language ?? '',
+          framework: projectProfile.framework ?? '',
+          frameworkVersion: projectProfile.framework_version ?? '',
+          runtime: projectProfile.runtime ?? '',
+          database: projectProfile.database ?? '',
+          architectureStyle: projectProfile.architecture_style ?? '',
+          testingStrategy: projectProfile.testing_strategy ?? '',
+          notes: projectProfile.notes ?? '',
+        }}
+      />
 
       <h1>Configuración</h1>
       <RepoSettingsForm

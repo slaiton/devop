@@ -96,7 +96,19 @@ export class GithubWebhooksService {
     const branch = String(payload.ref ?? '').replace(/^refs\/heads\//, '');
     if (!branch || !matchesBranchPattern(branch, repository.monitored_branches)) return;
 
-    const reviewRunId = await this.createReviewRun(orgId, repository.id, null, commitSha, 'push', branch);
+    const authorName: string | null = payload.head_commit?.author?.name ?? null;
+    const authorEmail: string | null = payload.head_commit?.author?.email ?? null;
+
+    const reviewRunId = await this.createReviewRun(
+      orgId,
+      repository.id,
+      null,
+      commitSha,
+      'push',
+      branch,
+      authorName,
+      authorEmail,
+    );
 
     await this.queue.add(REVIEW_QUEUE_NAME, {
       reviewRunId,
@@ -140,6 +152,8 @@ export class GithubWebhooksService {
       pr.head.sha,
       'pull_request',
       pr.head.ref,
+      null,
+      null,
     );
 
     await this.queue.add(REVIEW_QUEUE_NAME, {
@@ -222,13 +236,16 @@ export class GithubWebhooksService {
     commitSha: string,
     trigger: 'push' | 'pull_request',
     branch: string,
+    authorName: string | null,
+    authorEmail: string | null,
   ): Promise<string> {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `INSERT INTO review_runs (organization_id, repository_id, pull_request_id, commit_sha, trigger, branch, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'running')
+        `INSERT INTO review_runs
+           (organization_id, repository_id, pull_request_id, commit_sha, trigger, branch, author_name, author_email, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running')
          RETURNING id`,
-        [orgId, repositoryId, pullRequestId, commitSha, trigger, branch],
+        [orgId, repositoryId, pullRequestId, commitSha, trigger, branch, authorName, authorEmail],
       );
       return rows[0].id as string;
     });

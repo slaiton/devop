@@ -59,10 +59,22 @@ export interface RetrievedContextChunk {
   content: string;
 }
 
+export interface ProjectProfile {
+  language?: string | null;
+  framework?: string | null;
+  frameworkVersion?: string | null;
+  runtime?: string | null;
+  database?: string | null;
+  architectureStyle?: string | null;
+  testingStrategy?: string | null;
+  notes?: string | null;
+}
+
 export interface ReviewDiffInput {
   repositoryFullName: string;
   commitSha: string;
   diff: string;
   staticFindings: StaticAnalysisFinding[];
   retrievedContext: RetrievedContextChunk[];
+  projectProfile?: ProjectProfile;
 }
