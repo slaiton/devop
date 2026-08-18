@@ -8,5 +8,6 @@ export interface ReviewJobPayload {
   owner: string;
   repo: string;
   commitSha: string;
+  branch: string;
   pullNumber?: number;
 }

@@ -87,22 +87,26 @@ export class GithubWebhooksService {
     if (!orgId) return;
 
     const [owner, repo] = String(payload.repository.full_name).split('/');
-    const repositoryId = await this.getRepositoryId(orgId, payload.repository.id);
-    if (!repositoryId) return;
+    const repository = await this.getRepositoryForPush(orgId, payload.repository.id);
+    if (!repository) return;
 
     const commitSha: string = payload.after;
     if (!commitSha || commitSha === '0000000000000000000000000000000000000000') return;
 
-    const reviewRunId = await this.createReviewRun(orgId, repositoryId, null, commitSha, 'push');
+    const branch = String(payload.ref ?? '').replace(/^refs\/heads\//, '');
+    if (!branch || !matchesBranchPattern(branch, repository.monitored_branches)) return;
+
+    const reviewRunId = await this.createReviewRun(orgId, repository.id, null, commitSha, 'push', branch);
 
     await this.queue.add(REVIEW_QUEUE_NAME, {
       reviewRunId,
       organizationId: orgId,
-      repositoryId,
+      repositoryId: repository.id,
       installationId,
       owner,
       repo,
       commitSha,
+      branch,
     });
   }
 
@@ -129,7 +133,14 @@ export class GithubWebhooksService {
       return rows[0].id as string;
     });
 
-    const reviewRunId = await this.createReviewRun(orgId, repositoryId, pullRequestId, pr.head.sha, 'pull_request');
+    const reviewRunId = await this.createReviewRun(
+      orgId,
+      repositoryId,
+      pullRequestId,
+      pr.head.sha,
+      'pull_request',
+      pr.head.ref,
+    );
 
     await this.queue.add(REVIEW_QUEUE_NAME, {
       reviewRunId,
@@ -139,6 +150,7 @@ export class GithubWebhooksService {
       owner,
       repo,
       commitSha: pr.head.sha,
+      branch: pr.head.ref,
       pullNumber: pr.number,
     });
   }
@@ -170,6 +182,19 @@ export class GithubWebhooksService {
     });
   }
 
+  private async getRepositoryForPush(
+    orgId: string,
+    githubRepoId: number,
+  ): Promise<{ id: string; monitored_branches: string[] } | null> {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        'SELECT id, monitored_branches FROM repositories WHERE github_repo_id = $1',
+        [githubRepoId],
+      );
+      return rows[0] ?? null;
+    });
+  }
+
   private async upsertRepositories(orgId: string, installationId: number, repos: any[]): Promise<void> {
     if (!repos.length) return;
     await withTenant(orgId, async (client) => {
@@ -196,15 +221,28 @@ export class GithubWebhooksService {
     pullRequestId: string | null,
     commitSha: string,
     trigger: 'push' | 'pull_request',
+    branch: string,
   ): Promise<string> {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `INSERT INTO review_runs (organization_id, repository_id, pull_request_id, commit_sha, trigger, status)
-         VALUES ($1, $2, $3, $4, $5, 'running')
+        `INSERT INTO review_runs (organization_id, repository_id, pull_request_id, commit_sha, trigger, branch, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'running')
          RETURNING id`,
-        [orgId, repositoryId, pullRequestId, commitSha, trigger],
+        [orgId, repositoryId, pullRequestId, commitSha, trigger, branch],
       );
       return rows[0].id as string;
     });
   }
+}
+
+/**
+ * arreglo vacío = todas las ramas (compatibilidad hacia atrás); si no, exact-match o
+ * patrón con sufijo "/*" (p. ej. "feature/*" matchea "feature/x").
+ */
+function matchesBranchPattern(branch: string, patterns: string[]): boolean {
+  if (!patterns.length) return true;
+  return patterns.some((pattern) => {
+    if (pattern.endsWith('/*')) return branch.startsWith(pattern.slice(0, -1));
+    return branch === pattern;
+  });
 }

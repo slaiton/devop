@@ -1,7 +1,14 @@
-import { Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
 import { CurrentOrg } from '../../common/currentOrg.decorator';
+import { CurrentUser } from '../../common/currentUser.decorator';
 import { DashboardService } from './dashboard.service';
+
+interface UpdateRepositorySettingsBody {
+  monitoredBranches?: string[];
+  promotionSourceBranch?: string;
+  promotionTargetBranch?: string;
+}
 
 @Controller('dashboard')
 @UseGuards(JwtAuthGuard)
@@ -11,6 +18,20 @@ export class DashboardController {
   @Get('repositories')
   listRepositories(@CurrentOrg() orgId: string) {
     return this.dashboardService.listRepositories(orgId);
+  }
+
+  @Get('repositories/:repositoryId/settings')
+  getRepositorySettings(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
+    return this.dashboardService.getRepositorySettings(orgId, repositoryId);
+  }
+
+  @Patch('repositories/:repositoryId/settings')
+  updateRepositorySettings(
+    @CurrentOrg() orgId: string,
+    @Param('repositoryId') repositoryId: string,
+    @Body() body: UpdateRepositorySettingsBody,
+  ) {
+    return this.dashboardService.updateRepositorySettings(orgId, repositoryId, body);
   }
 
   @Get('repositories/:repositoryId/pull-requests')
@@ -30,6 +51,36 @@ export class DashboardController {
     @Param('pullRequestId') pullRequestId: string,
   ) {
     return this.dashboardService.mergePullRequest(orgId, repositoryId, pullRequestId);
+  }
+
+  @Get('repositories/:repositoryId/promotions')
+  listPromotions(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
+    return this.dashboardService.listPromotions(orgId, repositoryId);
+  }
+
+  @Post('repositories/:repositoryId/promotions')
+  requestPromotion(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @Param('repositoryId') repositoryId: string,
+    @Body() body: { reviewRunId: string },
+  ) {
+    return this.dashboardService.requestPromotion(orgId, repositoryId, body.reviewRunId, userId);
+  }
+
+  @Post('promotions/:promotionId/approve')
+  approvePromotion(@CurrentOrg() orgId: string, @CurrentUser() userId: string, @Param('promotionId') promotionId: string) {
+    return this.dashboardService.decidePromotion(orgId, promotionId, userId, 'approved');
+  }
+
+  @Post('promotions/:promotionId/reject')
+  rejectPromotion(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @Param('promotionId') promotionId: string,
+    @Body() body: { notes?: string },
+  ) {
+    return this.dashboardService.decidePromotion(orgId, promotionId, userId, 'rejected', body?.notes);
   }
 
   @Get('review-runs/:reviewRunId')

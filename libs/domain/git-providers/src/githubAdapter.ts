@@ -5,6 +5,7 @@ import type {
   CheckRunParams,
   CommitRef,
   GitProviderPort,
+  MergeBranchParams,
   PullRequestRef,
   ReviewCommentParams,
   SummaryCommentParams,
@@ -104,6 +105,25 @@ export class GithubAdapter implements GitProviderPort {
       pull_number: params.pullNumber,
     });
     return { merged: data.merged };
+  }
+
+  async mergeBranch(params: MergeBranchParams): Promise<{ merged: boolean; conflict: boolean }> {
+    const client = this.getInstallationClient(params.installationId);
+    try {
+      const { data } = await client.repos.merge({
+        owner: params.owner,
+        repo: params.repo,
+        base: params.base,
+        head: params.head,
+      });
+      // 204 (ya está al día) devuelve data undefined/vacío; lo tratamos como éxito.
+      return { merged: !data || 'sha' in data, conflict: false };
+    } catch (err: any) {
+      if (err?.status === 409) {
+        return { merged: false, conflict: true };
+      }
+      throw err;
+    }
   }
 
   private getInstallationClient(installationId: number): Octokit {

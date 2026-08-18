@@ -75,28 +75,39 @@ export class ReviewService {
         retrievedContext,
       });
 
-      await this.persistResult(payload, result);
-      await this.evaluateGuardrailsAndPublish(payload, result);
+      const config = await this.getQualityGateConfig(payload.organizationId, payload.repositoryId);
+      const shouldBlock = this.evaluateShouldBlock(config, result);
+
+      await this.persistResult(payload, result, shouldBlock);
+      await this.publishToGithub(payload, result, shouldBlock);
     } catch (err) {
       await this.markFailed(payload, (err as Error).message);
       throw err;
     }
   }
 
-  private async persistResult(payload: ReviewJobPayload, result: ReviewResult): Promise<void> {
+  private evaluateShouldBlock(config: QualityGateConfig, result: ReviewResult): boolean {
+    const hasSecretFinding = result.findings.some((f) => f.category === 'security' && /secret|credential|token/i.test(f.title));
+    const blockingRiskLevels = config.block_on_risk_level === 'medium' ? ['medium', 'high'] : ['high'];
+    return (config.block_on_secret && hasSecretFinding) || blockingRiskLevels.includes(result.risk_level);
+  }
+
+  private async persistResult(payload: ReviewJobPayload, result: ReviewResult, shouldBlock: boolean): Promise<void> {
     await withTenant(payload.organizationId, async (client) => {
       await client.query(
         `UPDATE review_runs
-         SET status = 'completed', quality_score = $1, risk_level = $2, summary = $3, completed_at = now()
-         WHERE id = $4`,
-        [result.quality_score, result.risk_level, result.summary, payload.reviewRunId],
+         SET status = 'completed', quality_score = $1, risk_level = $2, summary = $3,
+             gate_decision = $4, completed_at = now()
+         WHERE id = $5`,
+        [result.quality_score, result.risk_level, result.summary, shouldBlock ? 'no_apto' : 'apto', payload.reviewRunId],
       );
 
       for (const finding of result.findings) {
+        const blocking = shouldBlock && (finding.severity === 'critical' || finding.severity === 'high');
         await client.query(
           `INSERT INTO findings
-             (organization_id, review_run_id, category, severity, file_path, line_start, line_end, title, explanation, suggested_fix, confidence, rule_source)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'llm')`,
+             (organization_id, review_run_id, category, severity, file_path, line_start, line_end, title, explanation, suggested_fix, confidence, rule_source, blocking)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'llm', $12)`,
           [
             payload.organizationId,
             payload.reviewRunId,
@@ -109,18 +120,14 @@ export class ReviewService {
             finding.explanation,
             finding.suggested_fix ? JSON.stringify(finding.suggested_fix) : null,
             finding.confidence,
+            blocking,
           ],
         );
       }
     });
   }
 
-  private async evaluateGuardrailsAndPublish(payload: ReviewJobPayload, result: ReviewResult): Promise<void> {
-    const config = await this.getQualityGateConfig(payload.organizationId, payload.repositoryId);
-    const hasSecretFinding = result.findings.some((f) => f.category === 'security' && /secret|credential|token/i.test(f.title));
-    const blockingRiskLevels = config.block_on_risk_level === 'medium' ? ['medium', 'high'] : ['high'];
-    const shouldBlock = (config.block_on_secret && hasSecretFinding) || blockingRiskLevels.includes(result.risk_level);
-
+  private async publishToGithub(payload: ReviewJobPayload, result: ReviewResult, shouldBlock: boolean): Promise<void> {
     if (payload.pullNumber) {
       for (const finding of result.findings) {
         if (!finding.line_start) continue;

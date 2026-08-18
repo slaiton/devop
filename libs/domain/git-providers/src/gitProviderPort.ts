@@ -33,6 +33,14 @@ export interface CommitRef {
   commitSha: string;
 }
 
+export interface MergeBranchParams {
+  installationId: number;
+  owner: string;
+  repo: string;
+  base: string;
+  head: string;
+}
+
 /**
  * Puerto genérico para cualquier proveedor Git. El MVP solo implementa
  * GithubAdapter; GitLab/Bitbucket en V1 implementan el mismo puerto sin
@@ -47,4 +55,5 @@ export interface GitProviderPort {
   postSummaryComment(params: SummaryCommentParams): Promise<void>;
   setCheckRunStatus(params: CheckRunParams): Promise<void>;
   mergePullRequest(params: PullRequestRef): Promise<{ merged: boolean }>;
+  mergeBranch(params: MergeBranchParams): Promise<{ merged: boolean; conflict: boolean }>;
 }
