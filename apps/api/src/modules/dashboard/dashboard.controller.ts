@@ -10,6 +10,22 @@ interface UpdateRepositorySettingsBody {
   promotionTargetBranch?: string;
 }
 
+interface UpdateProjectProfileBody {
+  language?: string;
+  framework?: string;
+  frameworkVersion?: string;
+  runtime?: string;
+  database?: string;
+  architectureStyle?: string;
+  testingStrategy?: string;
+  notes?: string;
+  mandatoryRules?: string[];
+  securityRules?: string[];
+  conventions?: string[];
+  migrationsPolicy?: string;
+  compatibilityNotes?: string;
+}
+
 @Controller('dashboard')
 @UseGuards(JwtAuthGuard)
 export class DashboardController {
@@ -43,17 +59,7 @@ export class DashboardController {
   updateProjectProfile(
     @CurrentOrg() orgId: string,
     @Param('repositoryId') repositoryId: string,
-    @Body()
-    body: {
-      language?: string;
-      framework?: string;
-      frameworkVersion?: string;
-      runtime?: string;
-      database?: string;
-      architectureStyle?: string;
-      testingStrategy?: string;
-      notes?: string;
-    },
+    @Body() body: UpdateProjectProfileBody,
   ) {
     return this.dashboardService.updateProjectProfile(orgId, repositoryId, body);
   }

@@ -209,6 +209,10 @@ tbody tr:hover {
   color: var(--danger);
   font-weight: 600;
 }
+.status-warn {
+  color: var(--warning);
+  font-weight: 600;
+}
 
 .badge-pending {
   background: var(--warning-bg);

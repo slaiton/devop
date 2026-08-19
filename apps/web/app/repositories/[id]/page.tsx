@@ -5,6 +5,7 @@ import { RequestPromotionButton, PromotionDecisionButtons } from './PromotionAct
 import { RepoSettingsForm } from './RepoSettingsForm';
 import { NotifyButton } from './NotifyButton';
 import { ProjectProfileForm } from './ProjectProfileForm';
+import { GateBadge } from '../../GateBadge';
 
 interface PullRequestRow {
   id: string;
@@ -27,7 +28,7 @@ interface PushRow {
   status: string;
   quality_score: number | null;
   risk_level: 'low' | 'medium' | 'high' | null;
-  gate_decision: 'apto' | 'no_apto' | null;
+  gate_decision: 'apto' | 'requiere_revision' | 'no_apto' | null;
   blocking_count: number;
   promotion_id: string | null;
   promotion_status: string | null;
@@ -63,6 +64,11 @@ interface ProjectProfileRow {
   architecture_style: string | null;
   testing_strategy: string | null;
   notes: string | null;
+  mandatory_rules: string[];
+  security_rules: string[];
+  conventions: string[];
+  migrations_policy: string | null;
+  compatibility_notes: string | null;
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -186,10 +192,11 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
                 <p>
                   {run.status !== 'completed' ? (
                     <span>Estado: {run.status}</span>
-                  ) : run.gate_decision === 'apto' ? (
-                    <span className="status-ok">✓ APTO</span>
                   ) : (
-                    <span className="status-bad">❌ NO APTO — {run.blocking_count} hallazgo(s) bloqueante(s)</span>
+                    <>
+                      <GateBadge decision={run.gate_decision} />
+                      {run.gate_decision === 'no_apto' && ` — ${run.blocking_count} hallazgo(s) bloqueante(s)`}
+                    </>
                   )}
                   {' — '}
                   Score: {run.quality_score ?? '-'} — Riesgo:{' '}
@@ -230,7 +237,12 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
           database: projectProfile.database ?? '',
           architectureStyle: projectProfile.architecture_style ?? '',
           testingStrategy: projectProfile.testing_strategy ?? '',
+          migrationsPolicy: projectProfile.migrations_policy ?? '',
+          compatibilityNotes: projectProfile.compatibility_notes ?? '',
           notes: projectProfile.notes ?? '',
+          mandatoryRules: (projectProfile.mandatory_rules ?? []).join('\n'),
+          securityRules: (projectProfile.security_rules ?? []).join('\n'),
+          conventions: (projectProfile.conventions ?? []).join('\n'),
         }}
       />
 

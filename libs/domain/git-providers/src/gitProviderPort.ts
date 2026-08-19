@@ -41,6 +41,13 @@ export interface MergeBranchParams {
   head: string;
 }
 
+export interface RecentCommitInfo {
+  sha: string;
+  message: string;
+  author: string | null;
+  date: string | null;
+}
+
 /**
  * Puerto genérico para cualquier proveedor Git. El MVP solo implementa
  * GithubAdapter; GitLab/Bitbucket en V1 implementan el mismo puerto sin
@@ -56,4 +63,5 @@ export interface GitProviderPort {
   setCheckRunStatus(params: CheckRunParams): Promise<void>;
   mergePullRequest(params: PullRequestRef): Promise<{ merged: boolean }>;
   mergeBranch(params: MergeBranchParams): Promise<{ merged: boolean; conflict: boolean }>;
+  getRecentCommits(params: CommitRef, count?: number): Promise<RecentCommitInfo[]>;
 }

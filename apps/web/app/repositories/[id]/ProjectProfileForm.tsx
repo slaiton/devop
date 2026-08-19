@@ -11,7 +11,19 @@ interface ProjectProfileValues {
   database: string;
   architectureStyle: string;
   testingStrategy: string;
+  migrationsPolicy: string;
+  compatibilityNotes: string;
   notes: string;
+  mandatoryRules: string;
+  securityRules: string;
+  conventions: string;
+}
+
+function toLines(value: string): string[] {
+  return value
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
 }
 
 export function ProjectProfileForm({
@@ -28,7 +40,8 @@ export function ProjectProfileForm({
   const [saved, setSaved] = useState(false);
 
   function set<K extends keyof ProjectProfileValues>(key: K) {
-    return (e: ChangeEvent<HTMLInputElement>) => setValues((v) => ({ ...v, [key]: e.target.value }));
+    return (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      setValues((v) => ({ ...v, [key]: e.target.value }));
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -40,7 +53,21 @@ export function ProjectProfileForm({
       const res = await fetch(`/api/dashboard/repositories/${repositoryId}/project-profile`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(values),
+        body: JSON.stringify({
+          language: values.language,
+          framework: values.framework,
+          frameworkVersion: values.frameworkVersion,
+          runtime: values.runtime,
+          database: values.database,
+          architectureStyle: values.architectureStyle,
+          testingStrategy: values.testingStrategy,
+          migrationsPolicy: values.migrationsPolicy,
+          compatibilityNotes: values.compatibilityNotes,
+          notes: values.notes,
+          mandatoryRules: toLines(values.mandatoryRules),
+          securityRules: toLines(values.securityRules),
+          conventions: toLines(values.conventions),
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -64,22 +91,61 @@ export function ProjectProfileForm({
         <label>Framework: <input value={values.framework} onChange={set('framework')} placeholder="laravel, nestjs…" /></label>
       </p>
       <p>
-        <label>Versión del framework: <input value={values.frameworkVersion} onChange={set('frameworkVersion')} /></label>
+        <label>Versión: <input value={values.frameworkVersion} onChange={set('frameworkVersion')} placeholder="Laravel 9" /></label>
       </p>
       <p>
-        <label>Runtime: <input value={values.runtime} onChange={set('runtime')} placeholder="php 5.6, node 20…" /></label>
+        <label>Runtime: <input value={values.runtime} onChange={set('runtime')} placeholder="php 8.4, node 20…" /></label>
       </p>
       <p>
-        <label>Base de datos: <input value={values.database} onChange={set('database')} placeholder="mysql, postgres…" /></label>
+        <label>Base de datos: <input value={values.database} onChange={set('database')} placeholder="postgresql, mysql…" /></label>
       </p>
       <p>
-        <label>Estilo de arquitectura: <input value={values.architectureStyle} onChange={set('architectureStyle')} placeholder="clean_architecture, legacy mvc…" /></label>
+        <label>Arquitectura: <input value={values.architectureStyle} onChange={set('architectureStyle')} placeholder="Controller → Service → Repository" /></label>
       </p>
       <p>
-        <label>Estrategia de testing: <input value={values.testingStrategy} onChange={set('testingStrategy')} /></label>
+        <label>Testing: <input value={values.testingStrategy} onChange={set('testingStrategy')} placeholder="PHPUnit / Feature + Unit" /></label>
       </p>
       <p>
-        <label>Notas: <input value={values.notes} onChange={set('notes')} placeholder="convenciones particulares del proyecto" /></label>
+        <label>
+          Reglas obligatorias (una por línea):
+          <textarea
+            rows={3}
+            value={values.mandatoryRules}
+            onChange={set('mandatoryRules')}
+            placeholder={'Laravel nativo\nseparación de responsabilidades'}
+          />
+        </label>
+      </p>
+      <p>
+        <label>
+          Reglas de seguridad (una por línea):
+          <textarea
+            rows={3}
+            value={values.securityRules}
+            onChange={set('securityRules')}
+            placeholder={'No secrets\nvalidar inputs\nautorización'}
+          />
+        </label>
+      </p>
+      <p>
+        <label>
+          Convenciones (una por línea):
+          <textarea
+            rows={3}
+            value={values.conventions}
+            onChange={set('conventions')}
+            placeholder={'PSR-12\nnaming\nestructura del proyecto'}
+          />
+        </label>
+      </p>
+      <p>
+        <label>Migraciones: <input value={values.migrationsPolicy} onChange={set('migrationsPolicy')} placeholder="Toda modificación DB debe incluir migration" /></label>
+      </p>
+      <p>
+        <label>Compatibilidad: <input value={values.compatibilityNotes} onChange={set('compatibilityNotes')} placeholder="No romper endpoints existentes" /></label>
+      </p>
+      <p>
+        <label>Notas: <input value={values.notes} onChange={set('notes')} placeholder="particularidades del proyecto" /></label>
       </p>
       <button type="submit" disabled={loading}>
         {loading ? 'Guardando…' : 'Guardar'}

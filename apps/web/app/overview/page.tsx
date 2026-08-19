@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 import Link from 'next/link';
+import { GateBadge } from '../GateBadge';
 
 interface RepositoryRow {
   id: string;
@@ -12,7 +13,7 @@ interface PendingPushRow {
   full_name: string;
   branch: string | null;
   commit_sha: string;
-  gate_decision: 'apto' | 'no_apto' | null;
+  gate_decision: 'apto' | 'requiere_revision' | 'no_apto' | null;
   risk_level: 'low' | 'medium' | 'high' | null;
   quality_score: number | null;
   started_at: string;
@@ -68,11 +69,7 @@ export default async function OverviewPage() {
                   <Link href={`/review-runs/${run.id}`}>{run.commit_sha.slice(0, 7)}</Link>
                 </td>
                 <td>
-                  {run.gate_decision === 'apto' ? (
-                    <span className="status-ok">✓ APTO</span>
-                  ) : (
-                    <span className="status-bad">❌ NO APTO</span>
-                  )}
+                  <GateBadge decision={run.gate_decision} />
                 </td>
                 <td>{run.risk_level ? <span className={`badge badge-${run.risk_level}`}>{run.risk_level}</span> : '-'}</td>
                 <td>{run.quality_score ?? '-'}</td>

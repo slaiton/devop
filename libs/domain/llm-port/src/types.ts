@@ -11,6 +11,8 @@ export const findingCategorySchema = z.enum([
   'best_practice',
   'documentation',
   'test_coverage',
+  'database',
+  'regression',
 ]);
 
 export const findingSeveritySchema = z.enum(['info', 'low', 'medium', 'high', 'critical']);
@@ -32,13 +34,19 @@ export const findingSchema = z.object({
     .nullable()
     .optional(),
   confidence: z.number().min(0).max(1),
+  violated_rule: z.string().nullable().optional(),
 });
 
 export const reviewResultSchema = z.object({
+  resultado: z.enum(['APTO', 'REQUIERE_REVISION', 'NO_APTO']),
   findings: z.array(findingSchema),
   quality_score: z.number().int().min(0).max(100),
   risk_level: z.enum(['low', 'medium', 'high']),
-  summary: z.string(),
+  resumen_ejecutivo: z.string(),
+  recomendaciones: z.array(z.string()),
+  tests_recomendados: z.array(z.string()),
+  comparacion_commits_previos: z.string(),
+  justificacion_final: z.string(),
 });
 
 export type Finding = z.infer<typeof findingSchema>;
@@ -68,6 +76,18 @@ export interface ProjectProfile {
   architectureStyle?: string | null;
   testingStrategy?: string | null;
   notes?: string | null;
+  mandatoryRules?: string[];
+  securityRules?: string[];
+  conventions?: string[];
+  migrationsPolicy?: string | null;
+  compatibilityNotes?: string | null;
+}
+
+export interface RecentCommit {
+  sha: string;
+  message: string;
+  author: string | null;
+  date: string | null;
 }
 
 export interface ReviewDiffInput {
@@ -77,4 +97,6 @@ export interface ReviewDiffInput {
   staticFindings: StaticAnalysisFinding[];
   retrievedContext: RetrievedContextChunk[];
   projectProfile?: ProjectProfile;
+  recentCommits?: RecentCommit[];
+  analyzedFiles: string[];
 }

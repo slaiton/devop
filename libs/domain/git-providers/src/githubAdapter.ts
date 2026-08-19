@@ -7,6 +7,7 @@ import type {
   GitProviderPort,
   MergeBranchParams,
   PullRequestRef,
+  RecentCommitInfo,
   ReviewCommentParams,
   SummaryCommentParams,
 } from './gitProviderPort';
@@ -124,6 +125,23 @@ export class GithubAdapter implements GitProviderPort {
       }
       throw err;
     }
+  }
+
+  async getRecentCommits(params: CommitRef, count = 3): Promise<RecentCommitInfo[]> {
+    const client = this.getInstallationClient(params.installationId);
+    const { data } = await client.repos.listCommits({
+      owner: params.owner,
+      repo: params.repo,
+      sha: params.commitSha,
+      per_page: count + 1,
+    });
+    // El primer resultado es el propio commit que se está revisando; se descarta.
+    return data.slice(1, count + 1).map((c) => ({
+      sha: c.sha,
+      message: c.commit.message,
+      author: c.commit.author?.name ?? c.author?.login ?? null,
+      date: c.commit.author?.date ?? null,
+    }));
   }
 
   private getInstallationClient(installationId: number): Octokit {

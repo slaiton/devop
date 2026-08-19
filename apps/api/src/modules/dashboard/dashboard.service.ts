@@ -115,7 +115,9 @@ export class DashboardService {
   async getProjectProfile(orgId: string, repositoryId: string) {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `SELECT language, framework, framework_version, runtime, database, architecture_style, testing_strategy, notes
+        `SELECT language, framework, framework_version, runtime, database, architecture_style,
+                testing_strategy, notes, mandatory_rules, security_rules, conventions,
+                migrations_policy, compatibility_notes
          FROM project_profiles WHERE repository_id = $1`,
         [repositoryId],
       );
@@ -129,6 +131,11 @@ export class DashboardService {
           architecture_style: null,
           testing_strategy: null,
           notes: null,
+          mandatory_rules: [],
+          security_rules: [],
+          conventions: [],
+          migrations_policy: null,
+          compatibility_notes: null,
         }
       );
     });
@@ -146,16 +153,25 @@ export class DashboardService {
       architectureStyle?: string;
       testingStrategy?: string;
       notes?: string;
+      mandatoryRules?: string[];
+      securityRules?: string[];
+      conventions?: string[];
+      migrationsPolicy?: string;
+      compatibilityNotes?: string;
     },
   ) {
     await withTenant(orgId, async (client) => {
       await client.query(
         `INSERT INTO project_profiles
-           (organization_id, repository_id, language, framework, framework_version, runtime, database, architecture_style, testing_strategy, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           (organization_id, repository_id, language, framework, framework_version, runtime, database,
+            architecture_style, testing_strategy, notes, mandatory_rules, security_rules, conventions,
+            migrations_policy, compatibility_notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          ON CONFLICT (repository_id) DO UPDATE SET
            language = $3, framework = $4, framework_version = $5, runtime = $6, database = $7,
-           architecture_style = $8, testing_strategy = $9, notes = $10, updated_at = now()`,
+           architecture_style = $8, testing_strategy = $9, notes = $10, mandatory_rules = $11,
+           security_rules = $12, conventions = $13, migrations_policy = $14, compatibility_notes = $15,
+           updated_at = now()`,
         [
           orgId,
           repositoryId,
@@ -167,6 +183,11 @@ export class DashboardService {
           profile.architectureStyle ?? null,
           profile.testingStrategy ?? null,
           profile.notes ?? null,
+          profile.mandatoryRules ?? [],
+          profile.securityRules ?? [],
+          profile.conventions ?? [],
+          profile.migrationsPolicy ?? null,
+          profile.compatibilityNotes ?? null,
         ],
       );
     });
@@ -200,7 +221,8 @@ export class DashboardService {
       });
 
       const publicOrigin = process.env.PUBLIC_WEB_ORIGIN ?? '';
-      const statusLabel = run.gate_decision === 'apto' ? '✓ APTO' : '❌ NO APTO';
+      const statusLabel =
+        run.gate_decision === 'apto' ? '✓ APTO' : run.gate_decision === 'requiere_revision' ? '⚠ REQUIERE REVISIÓN' : '❌ NO APTO';
       const findingsHtml = findings.length
         ? `<ul>${findings
             .map(
