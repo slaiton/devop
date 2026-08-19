@@ -168,7 +168,7 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
       {pushes.length === 0 ? (
         <p>Todavía no hay pushes analizados en las ramas monitoreadas.</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <div>
           {pushes.map((run) => {
             const canPromote =
               run.status === 'completed' &&
@@ -177,7 +177,7 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
               !run.promotion_id;
 
             return (
-              <div key={run.id} style={{ border: '1px solid #ccc', borderRadius: 6, padding: '0.75rem' }}>
+              <div key={run.id} className="card">
                 <p>
                   <strong>{run.branch ?? '-'}</strong> — commit{' '}
                   <Link href={`/review-runs/${run.id}`}>{run.commit_sha.slice(0, 7)}</Link> —{' '}
@@ -187,17 +187,21 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
                   {run.status !== 'completed' ? (
                     <span>Estado: {run.status}</span>
                   ) : run.gate_decision === 'apto' ? (
-                    <span style={{ color: 'green' }}>✓ APTO</span>
+                    <span className="status-ok">✓ APTO</span>
                   ) : (
-                    <span style={{ color: 'crimson' }}>❌ NO APTO — {run.blocking_count} hallazgo(s) bloqueante(s)</span>
+                    <span className="status-bad">❌ NO APTO — {run.blocking_count} hallazgo(s) bloqueante(s)</span>
                   )}
                   {' — '}
                   Score: {run.quality_score ?? '-'} — Riesgo:{' '}
                   {run.risk_level ? <span className={`badge badge-${run.risk_level}`}>{run.risk_level}</span> : '-'}
                 </p>
-                {run.promotion_id && <p>Promoción: {run.promotion_status}</p>}
+                {run.promotion_id && (
+                  <p>
+                    Promoción: <span className={`badge badge-${run.promotion_status}`}>{run.promotion_status}</span>
+                  </p>
+                )}
                 {run.notified_at && <p>✉️ Notificado el {new Date(run.notified_at).toLocaleString()}</p>}
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <div className="card-row">
                   {run.author_email && !run.notified_at && (
                     <NotifyButton repositoryId={id} reviewRunId={run.id} authorEmail={run.author_email} />
                   )}

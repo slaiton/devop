@@ -31,14 +31,6 @@ interface ReviewRunDetail {
   findings: Finding[];
 }
 
-const SEVERITY_COLOR: Record<string, string> = {
-  critical: '#f8d7da',
-  high: '#fde2c8',
-  medium: '#fff3cd',
-  low: '#d6e9ff',
-  info: '#e9ecef',
-};
-
 const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -52,9 +44,11 @@ async function fetchJson<T>(path: string): Promise<T> {
 }
 
 function findingsForLine(findings: Finding[], filePath: string, line: number): Finding[] {
-  return findings.filter(
-    (f) => f.file_path === filePath && f.line_start != null && line >= f.line_start && line <= (f.line_end ?? f.line_start),
-  );
+  return findings
+    .filter(
+      (f) => f.file_path === filePath && f.line_start != null && line >= f.line_start && line <= (f.line_end ?? f.line_start),
+    )
+    .sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0));
 }
 
 export default async function ReviewRunDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -88,13 +82,14 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
       <p>
         Commit <code>{run.commit_sha.slice(0, 7)}</code> —{' '}
         {run.gate_decision === 'apto' ? (
-          <span style={{ color: 'green' }}>✓ APTO</span>
+          <span className="status-ok">✓ APTO</span>
         ) : run.gate_decision === 'no_apto' ? (
-          <span style={{ color: 'crimson' }}>❌ NO APTO</span>
+          <span className="status-bad">❌ NO APTO</span>
         ) : (
           <span>{run.status}</span>
         )}
-        {' — '}Score: {run.quality_score ?? '-'} — Riesgo: {run.risk_level ?? '-'}
+        {' — '}Score: {run.quality_score ?? '-'} — Riesgo:{' '}
+        {run.risk_level ? <span className={`badge badge-${run.risk_level}`}>{run.risk_level}</span> : '-'}
       </p>
       {run.summary && <p>{run.summary}</p>}
 
@@ -105,32 +100,28 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
         const fileFindings = run.findings.filter((f) => f.file_path === filePath);
 
         return (
-          <section key={fileIdx} style={{ marginBottom: '1.5rem', border: '1px solid #ccc', borderRadius: 6 }}>
-            <div style={{ padding: '0.5rem 0.75rem', background: '#f5f5f5', fontFamily: 'monospace' }}>{filePath}</div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'monospace', fontSize: '0.85em' }}>
+          <div key={fileIdx} className="diff-file">
+            <div className="diff-file-header">{filePath}</div>
+            <table className="diff-table">
               <tbody>
                 {file.chunks.map((chunk, chunkIdx) =>
                   chunk.changes.map((change, changeIdx) => {
                     const newLine = change.type === 'add' ? change.ln : change.type === 'normal' ? change.ln2 : undefined;
                     const lineFindings = newLine ? findingsForLine(fileFindings, filePath, newLine) : [];
-                    const worstBlocking = lineFindings.some((f) => f.blocking);
-                    const bg = lineFindings.length
-                      ? SEVERITY_COLOR[
-                          lineFindings.sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0))[0]
-                            .severity
-                        ]
-                      : change.type === 'add'
-                        ? '#eaffea'
-                        : change.type === 'del'
-                          ? '#ffecec'
-                          : undefined;
+                    const worstSeverity = lineFindings[0]?.severity;
+
+                    const rowClass = [
+                      worstSeverity ? `diff-finding-${worstSeverity}` : change.type === 'add' ? 'diff-add' : change.type === 'del' ? 'diff-del' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
 
                     return (
-                      <tr key={`${chunkIdx}-${changeIdx}`} style={{ background: bg, borderLeft: worstBlocking ? '3px solid crimson' : undefined }}>
-                        <td style={{ width: 40, textAlign: 'right', color: '#888', userSelect: 'none', padding: '0 0.5em' }}>
+                      <tr key={`${chunkIdx}-${changeIdx}`} className={rowClass || undefined}>
+                        <td className="diff-line-num">
                           {change.type === 'add' ? change.ln : change.type === 'normal' ? change.ln2 : ''}
                         </td>
-                        <td style={{ whiteSpace: 'pre' }}>
+                        <td>
                           {change.type === 'add' ? '+' : change.type === 'del' ? '-' : ' '}
                           {change.content.replace(/^[+-]/, '')}
                         </td>
@@ -142,13 +133,15 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
             </table>
 
             {fileFindings.length > 0 && (
-              <div style={{ padding: '0.75rem' }}>
-                <strong>Hallazgos en este archivo</strong>
+              <div className="diff-findings-list">
+                <h3>Hallazgos en este archivo</h3>
                 <ul>
                   {fileFindings.map((f) => (
                     <li key={f.id}>
-                      [{f.severity.toUpperCase()}
-                      {f.blocking ? ' — bloqueante' : ''}] {f.title}
+                      <span className={`badge badge-${f.severity === 'critical' || f.severity === 'high' ? 'high' : f.severity === 'medium' ? 'medium' : 'low'}`}>
+                        {f.severity.toUpperCase()}
+                      </span>{' '}
+                      {f.blocking && <strong className="status-bad">bloqueante</strong>} {f.title}
                       {f.line_start ? ` (línea ${f.line_start})` : ''}
                       <br />
                       {f.explanation}
@@ -157,7 +150,7 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
                 </ul>
               </div>
             )}
-          </section>
+          </div>
         );
       })}
     </main>

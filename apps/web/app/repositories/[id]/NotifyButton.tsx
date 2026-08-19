@@ -42,7 +42,7 @@ export function NotifyButton({
       <button onClick={handleClick} disabled={loading}>
         {loading ? 'Enviando…' : 'Enviar por correo'}
       </button>
-      {error && <p style={{ color: 'crimson', fontSize: '0.85em' }}>{error}</p>}
+      {error && <p className="error-text">{error}</p>}
     </div>
   );
 }

@@ -46,7 +46,7 @@ export function MergeButton({
       <button onClick={handleMerge} disabled={loading}>
         {loading ? 'Mergeando…' : 'Merge'}
       </button>
-      {error && <p style={{ color: 'crimson', fontSize: '0.85em' }}>{error}</p>}
+      {error && <p className="error-text">{error}</p>}
     </div>
   );
 }

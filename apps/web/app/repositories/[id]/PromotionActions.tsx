@@ -47,7 +47,7 @@ export function RequestPromotionButton({
       <button onClick={handleClick} disabled={loading}>
         {loading ? 'Solicitando…' : 'Solicitar promoción'}
       </button>
-      {error && <p style={{ color: 'crimson', fontSize: '0.85em' }}>{error}</p>}
+      {error && <p className="error-text">{error}</p>}
     </div>
   );
 }
@@ -101,7 +101,7 @@ export function PromotionDecisionButtons({
       <button onClick={handleReject} disabled={loading !== null}>
         {loading === 'reject' ? 'Rechazando…' : 'Rechazar'}
       </button>
-      {error && <p style={{ color: 'crimson', fontSize: '0.85em' }}>{error}</p>}
+      {error && <p className="error-text">{error}</p>}
     </div>
   );
 }

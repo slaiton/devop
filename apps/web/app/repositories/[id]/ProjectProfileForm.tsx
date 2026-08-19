@@ -84,8 +84,8 @@ export function ProjectProfileForm({
       <button type="submit" disabled={loading}>
         {loading ? 'Guardando…' : 'Guardar'}
       </button>
-      {saved && <span style={{ color: 'green', marginLeft: '0.5em' }}>Guardado</span>}
-      {error && <p style={{ color: 'crimson', fontSize: '0.85em' }}>{error}</p>}
+      {saved && <span className="status-ok" style={{ marginLeft: '0.5em' }}>Guardado</span>}
+      {error && <p className="error-text">{error}</p>}
     </form>
   );
 }

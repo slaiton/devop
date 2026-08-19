@@ -1,42 +1,314 @@
+:root {
+  --bg: #0f1115;
+  --bg-elevated: #171a21;
+  --bg-inset: #0b0d11;
+  --border: #2a2d34;
+  --border-strong: #3a3f4a;
+  --text: #e6e6e6;
+  --text-muted: #9aa1ac;
+  --accent: #6ea8fe;
+  --success: #2ea043;
+  --success-bg: rgba(46, 160, 67, 0.15);
+  --warning: #d29922;
+  --warning-bg: rgba(210, 153, 34, 0.15);
+  --danger: #f85149;
+  --danger-bg: rgba(248, 81, 73, 0.15);
+  --info: #58a6ff;
+  --info-bg: rgba(88, 166, 255, 0.15);
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
-  font-family: system-ui, sans-serif;
+  font-family: -apple-system, system-ui, 'Segoe UI', sans-serif;
   margin: 0;
   padding: 2rem;
-  background: #0f1115;
-  color: #e6e6e6;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+main {
+  max-width: 1100px;
+  margin: 0 auto;
 }
 
 a {
-  color: #6ea8fe;
+  color: var(--accent);
+  text-decoration: none;
 }
+a:hover {
+  text-decoration: underline;
+}
+
+h1 {
+  font-size: 1.35rem;
+  margin: 2rem 0 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+h1:first-of-type {
+  margin-top: 0;
+}
+
+p {
+  color: var(--text);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--bg-inset);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+/* ---- Formularios / controles ---- */
+
+button {
+  font: inherit;
+  background: var(--accent);
+  color: #0b0d11;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+button:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  background: var(--bg-inset);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  min-width: 220px;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+form p {
+  margin: 0.6rem 0;
+}
+form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  max-width: 420px;
+}
+
+/* ---- Tablas ---- */
 
 table {
   width: 100%;
   border-collapse: collapse;
   margin-top: 1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 th,
 td {
   text-align: left;
-  padding: 0.5rem;
-  border-bottom: 1px solid #2a2d34;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
 }
 
+th {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ---- Tarjetas ---- */
+
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.card-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+
+.chip {
+  display: inline-block;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 0.45rem 0.75rem;
+  color: var(--text);
+}
+.chip:hover {
+  border-color: var(--accent);
+}
+
+/* ---- Badges de estado ---- */
+
 .badge {
-  padding: 0.15rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.85rem;
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 .badge-low {
-  background: #1f6f43;
+  background: var(--info-bg);
+  color: var(--info);
 }
-
 .badge-medium {
-  background: #8a6d1f;
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.badge-high {
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
-.badge-high {
-  background: #8a2f2f;
+.status-ok {
+  color: var(--success);
+  font-weight: 600;
+}
+.status-bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.badge-pending {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.badge-approved {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.badge-rejected {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.error-text {
+  color: var(--danger);
+  font-size: 0.85em;
+  margin: 0.3rem 0 0;
+}
+
+/* ---- Visor de diff ---- */
+
+.diff-file {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 1.25rem;
+  overflow: hidden;
+}
+
+.diff-file-header {
+  padding: 0.5rem 0.85rem;
+  background: var(--bg-inset);
+  border-bottom: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: none;
+  border-radius: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.diff-table td {
+  padding: 0.05rem 0.6rem;
+  border-bottom: none;
+  white-space: pre;
+}
+
+.diff-line-num {
+  width: 3rem;
+  text-align: right;
+  color: var(--text-muted);
+  user-select: none;
+  border-right: 1px solid var(--border);
+}
+
+.diff-add {
+  background: rgba(46, 160, 67, 0.12);
+}
+.diff-del {
+  background: rgba(248, 81, 73, 0.1);
+}
+
+.diff-finding-critical,
+.diff-finding-high {
+  background: rgba(248, 81, 73, 0.28) !important;
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.diff-finding-medium {
+  background: rgba(210, 153, 34, 0.25) !important;
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+.diff-finding-low,
+.diff-finding-info {
+  background: rgba(88, 166, 255, 0.2) !important;
+  box-shadow: inset 3px 0 0 var(--info);
+}
+
+.diff-findings-list {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+}
+.diff-findings-list h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.diff-findings-list ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+.diff-findings-list li {
+  margin-bottom: 0.6rem;
 }

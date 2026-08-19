@@ -69,9 +69,9 @@ export default async function OverviewPage() {
                 </td>
                 <td>
                   {run.gate_decision === 'apto' ? (
-                    <span style={{ color: 'green' }}>✓ APTO</span>
+                    <span className="status-ok">✓ APTO</span>
                   ) : (
-                    <span style={{ color: 'crimson' }}>❌ NO APTO</span>
+                    <span className="status-bad">❌ NO APTO</span>
                   )}
                 </td>
                 <td>{run.risk_level ? <span className={`badge badge-${run.risk_level}`}>{run.risk_level}</span> : '-'}</td>
@@ -84,13 +84,9 @@ export default async function OverviewPage() {
       )}
 
       <h1>Acceso rápido a repos</h1>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+      <div className="card-row">
         {repositories.map((repo) => (
-          <Link
-            key={repo.id}
-            href={`/repositories/${repo.id}`}
-            style={{ border: '1px solid #ccc', borderRadius: 6, padding: '0.5rem 0.75rem' }}
-          >
+          <Link key={repo.id} href={`/repositories/${repo.id}`} className="chip">
             {repo.full_name}
           </Link>
         ))}
