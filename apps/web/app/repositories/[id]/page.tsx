@@ -14,6 +14,7 @@ interface PullRequestRow {
   author_login: string;
   source_branch: string;
   target_branch: string;
+  review_run_id: string | null;
   quality_score: number | null;
   risk_level: 'low' | 'medium' | 'high' | null;
   review_status: string | null;
@@ -110,7 +111,7 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
           {pullRequests.map((pr) => (
             <tr key={pr.id}>
               <td>{pr.github_pr_number}</td>
-              <td>{pr.title}</td>
+              <td>{pr.review_run_id ? <Link href={`/review-runs/${pr.review_run_id}`}>{pr.title}</Link> : pr.title}</td>
               <td>{pr.author_login}</td>
               <td>{pr.source_branch} → {pr.target_branch}</td>
               <td>{pr.quality_score ?? '-'}</td>
@@ -178,7 +179,8 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
             return (
               <div key={run.id} style={{ border: '1px solid #ccc', borderRadius: 6, padding: '0.75rem' }}>
                 <p>
-                  <strong>{run.branch ?? '-'}</strong> — commit {run.commit_sha.slice(0, 7)} —{' '}
+                  <strong>{run.branch ?? '-'}</strong> — commit{' '}
+                  <Link href={`/review-runs/${run.id}`}>{run.commit_sha.slice(0, 7)}</Link> —{' '}
                   {new Date(run.started_at).toLocaleString()}
                 </p>
                 <p>

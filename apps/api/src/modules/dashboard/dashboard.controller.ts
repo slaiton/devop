@@ -120,4 +120,20 @@ export class DashboardController {
   getReviewRun(@CurrentOrg() orgId: string, @Param('reviewRunId') reviewRunId: string) {
     return this.dashboardService.getReviewRun(orgId, reviewRunId);
   }
+
+  @Get('review-runs/:reviewRunId/diff')
+  async getReviewRunDiff(@CurrentOrg() orgId: string, @Param('reviewRunId') reviewRunId: string) {
+    const diff = await this.dashboardService.getReviewRunDiff(orgId, reviewRunId);
+    return { diff };
+  }
+
+  @Get('developers')
+  listDevelopers(@CurrentOrg() orgId: string) {
+    return this.dashboardService.listDevelopers(orgId);
+  }
+
+  @Get('overview')
+  getOverview(@CurrentOrg() orgId: string) {
+    return this.dashboardService.getOverview(orgId);
+  }
 }

@@ -76,10 +76,10 @@ export class DashboardService {
       const { rows } = await client.query(
         `SELECT pr.id, pr.github_pr_number, pr.title, pr.status, pr.author_login,
                 pr.source_branch, pr.target_branch,
-                rr.quality_score, rr.risk_level, rr.status AS review_status
+                rr.id AS review_run_id, rr.quality_score, rr.risk_level, rr.status AS review_status
          FROM pull_requests pr
          LEFT JOIN LATERAL (
-           SELECT quality_score, risk_level, status
+           SELECT id, quality_score, risk_level, status
            FROM review_runs
            WHERE review_runs.pull_request_id = pr.id
            ORDER BY started_at DESC
@@ -352,7 +352,15 @@ export class DashboardService {
 
   async getReviewRun(orgId: string, reviewRunId: string) {
     return withTenant(orgId, async (client) => {
-      const { rows: runRows } = await client.query('SELECT * FROM review_runs WHERE id = $1', [reviewRunId]);
+      const { rows: runRows } = await client.query(
+        `SELECT rr.*, r.full_name AS repository_full_name,
+                pr.github_pr_number, pr.title AS pull_request_title
+         FROM review_runs rr
+         JOIN repositories r ON r.id = rr.repository_id
+         LEFT JOIN pull_requests pr ON pr.id = rr.pull_request_id
+         WHERE rr.id = $1`,
+        [reviewRunId],
+      );
       if (!runRows[0]) return null;
 
       const { rows: findingRows } = await client.query(
@@ -362,6 +370,73 @@ export class DashboardService {
         [reviewRunId],
       );
       return { ...runRows[0], findings: findingRows };
+    });
+  }
+
+  async getReviewRunDiff(orgId: string, reviewRunId: string): Promise<string> {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT rr.commit_sha, r.full_name, gi.installation_id, pr.github_pr_number
+         FROM review_runs rr
+         JOIN repositories r ON r.id = rr.repository_id
+         JOIN github_installations gi ON gi.id = r.github_installation_id
+         LEFT JOIN pull_requests pr ON pr.id = rr.pull_request_id
+         WHERE rr.id = $1`,
+        [reviewRunId],
+      );
+      const run = rows[0];
+      if (!run) throw new NotFoundException('review run not found');
+
+      const [owner, repo] = String(run.full_name).split('/');
+      const installationId = Number(run.installation_id);
+
+      return run.github_pr_number
+        ? this.adapter.getPullRequestDiff({ installationId, owner, repo, pullNumber: run.github_pr_number })
+        : this.adapter.getCommitDiff({ installationId, owner, repo, commitSha: run.commit_sha });
+    });
+  }
+
+  async listDevelopers(orgId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT d.id, d.github_login, d.email, d.display_name,
+                count(rr.id) AS total_reviews,
+                count(*) FILTER (WHERE rr.gate_decision = 'apto') AS apto_count,
+                count(*) FILTER (WHERE rr.gate_decision = 'no_apto') AS no_apto_count,
+                round(avg(rr.quality_score)) AS avg_quality_score,
+                coalesce((
+                  SELECT count(*) FROM findings f
+                  JOIN review_runs rr2 ON rr2.id = f.review_run_id
+                  WHERE rr2.developer_id = d.id AND f.blocking
+                ), 0) AS blocking_findings_total
+         FROM developers d
+         LEFT JOIN review_runs rr ON rr.developer_id = d.id
+         WHERE d.organization_id = $1
+         GROUP BY d.id
+         ORDER BY total_reviews DESC`,
+        [orgId],
+      );
+      return rows;
+    });
+  }
+
+  async getOverview(orgId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows: repositories } = await client.query(
+        `SELECT id, full_name FROM repositories ORDER BY full_name`,
+      );
+      const { rows: pendingPushes } = await client.query(
+        `SELECT rr.id, rr.repository_id, r.full_name, rr.branch, rr.commit_sha,
+                rr.gate_decision, rr.risk_level, rr.quality_score, rr.started_at
+         FROM review_runs rr
+         JOIN repositories r ON r.id = rr.repository_id
+         LEFT JOIN promotions p ON p.review_run_id = rr.id
+         WHERE rr.trigger = 'push' AND rr.status = 'completed'
+           AND p.id IS NULL AND rr.notified_at IS NULL
+         ORDER BY rr.started_at DESC
+         LIMIT 30`,
+      );
+      return { repositories, pendingPushes };
     });
   }
 }

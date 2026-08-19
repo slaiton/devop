@@ -33,6 +33,9 @@ export default async function HomePage() {
 
   return (
     <main>
+      <p>
+        <a href="/overview">Ver pendientes</a> · <a href="/developers">Developers</a>
+      </p>
       <h1>Repositorios</h1>
       {repositories.length === 0 ? (
         <p>Todavía no hay repositorios conectados. Instala la GitHub App en tu organización para empezar.</p>

@@ -98,6 +98,7 @@ export class GithubWebhooksService {
 
     const authorName: string | null = payload.head_commit?.author?.name ?? null;
     const authorEmail: string | null = payload.head_commit?.author?.email ?? null;
+    const developerId = await this.resolveDeveloper(orgId, { email: authorEmail, name: authorName });
 
     const reviewRunId = await this.createReviewRun(
       orgId,
@@ -108,6 +109,7 @@ export class GithubWebhooksService {
       branch,
       authorName,
       authorEmail,
+      developerId,
     );
 
     await this.queue.add(REVIEW_QUEUE_NAME, {
@@ -145,6 +147,8 @@ export class GithubWebhooksService {
       return rows[0].id as string;
     });
 
+    const developerId = await this.resolveDeveloper(orgId, { githubLogin: pr.user.login });
+
     const reviewRunId = await this.createReviewRun(
       orgId,
       repositoryId,
@@ -154,6 +158,7 @@ export class GithubWebhooksService {
       pr.head.ref,
       null,
       null,
+      developerId,
     );
 
     await this.queue.add(REVIEW_QUEUE_NAME, {
@@ -209,6 +214,32 @@ export class GithubWebhooksService {
     });
   }
 
+  /** login de GitHub (PRs) o email de commit (pushes) — no siempre hay ambos. */
+  private async resolveDeveloper(
+    orgId: string,
+    identity: { githubLogin?: string | null; email?: string | null; name?: string | null },
+  ): Promise<string | null> {
+    const githubLogin = identity.githubLogin ?? null;
+    const email = identity.email ?? null;
+    if (!githubLogin && !email) return null;
+
+    return withTenant(orgId, async (client) => {
+      const existing = await client.query(
+        `SELECT id FROM developers WHERE organization_id = $1 AND (($2::text IS NOT NULL AND github_login = $2) OR ($3::text IS NOT NULL AND email = $3))`,
+        [orgId, githubLogin, email],
+      );
+      if (existing.rows[0]) return existing.rows[0].id as string;
+
+      const { rows } = await client.query(
+        `INSERT INTO developers (organization_id, github_login, email, display_name)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [orgId, githubLogin, email, identity.name ?? githubLogin ?? email],
+      );
+      return rows[0].id as string;
+    });
+  }
+
   private async upsertRepositories(orgId: string, installationId: number, repos: any[]): Promise<void> {
     if (!repos.length) return;
     await withTenant(orgId, async (client) => {
@@ -238,14 +269,15 @@ export class GithubWebhooksService {
     branch: string,
     authorName: string | null,
     authorEmail: string | null,
+    developerId: string | null,
   ): Promise<string> {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `INSERT INTO review_runs
-           (organization_id, repository_id, pull_request_id, commit_sha, trigger, branch, author_name, author_email, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running')
+           (organization_id, repository_id, pull_request_id, commit_sha, trigger, branch, author_name, author_email, developer_id, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'running')
          RETURNING id`,
-        [orgId, repositoryId, pullRequestId, commitSha, trigger, branch, authorName, authorEmail],
+        [orgId, repositoryId, pullRequestId, commitSha, trigger, branch, authorName, authorEmail, developerId],
       );
       return rows[0].id as string;
     });
