@@ -1,13 +1,18 @@
 import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
+import { RolesGuard } from '../../common/roles.guard';
+import { Roles } from '../../common/roles.decorator';
 import { CurrentOrg } from '../../common/currentOrg.decorator';
 import { CurrentUser } from '../../common/currentUser.decorator';
+import { CurrentRole } from '../../common/currentRole.decorator';
+import { AuthService } from '../auth/auth.service';
 import { DashboardService } from './dashboard.service';
 
 interface UpdateRepositorySettingsBody {
   monitoredBranches?: string[];
   promotionSourceBranch?: string;
   promotionTargetBranch?: string;
+  autoCreatePrOnPush?: boolean;
 }
 
 interface UpdateProjectProfileBody {
@@ -27,21 +32,76 @@ interface UpdateProjectProfileBody {
 }
 
 @Controller('dashboard')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class DashboardController {
-  constructor(private readonly dashboardService: DashboardService) {}
+  constructor(
+    private readonly dashboardService: DashboardService,
+    private readonly authService: AuthService,
+  ) {}
+
+  // ---- Vista personal ("usuario") — sin @Roles, abierta a admin y developer ----
+
+  @Get('me/profile')
+  getMyProfile(@CurrentOrg() orgId: string, @CurrentUser() userId: string) {
+    return this.dashboardService.getMyProfile(orgId, userId);
+  }
+
+  @Get('me/reviews')
+  getMyReviews(@CurrentOrg() orgId: string, @CurrentUser() userId: string) {
+    return this.dashboardService.getMyReviews(orgId, userId);
+  }
+
+  @Get('review-runs/:reviewRunId')
+  getReviewRun(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @CurrentRole() role: string,
+    @Param('reviewRunId') reviewRunId: string,
+  ) {
+    return this.dashboardService.getReviewRun(orgId, reviewRunId, { userId, role });
+  }
+
+  @Get('review-runs/:reviewRunId/diff')
+  async getReviewRunDiff(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @CurrentRole() role: string,
+    @Param('reviewRunId') reviewRunId: string,
+  ) {
+    const diff = await this.dashboardService.getReviewRunDiff(orgId, reviewRunId, { userId, role });
+    return { diff };
+  }
+
+  // ---- Gestión de equipo (solo admin) ----
+
+  @Get('team')
+  @Roles('admin')
+  listTeam(@CurrentOrg() orgId: string) {
+    return this.dashboardService.listTeam(orgId);
+  }
+
+  @Post('team/invite')
+  @Roles('admin')
+  inviteTeamMember(@CurrentOrg() orgId: string, @Body() body: { githubLogin: string }) {
+    return this.authService.inviteUser(orgId, body.githubLogin);
+  }
+
+  // ---- Todo lo demás es gestión de repos/organización — solo admin ----
 
   @Get('repositories')
+  @Roles('admin')
   listRepositories(@CurrentOrg() orgId: string) {
     return this.dashboardService.listRepositories(orgId);
   }
 
   @Get('repositories/:repositoryId/settings')
+  @Roles('admin')
   getRepositorySettings(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
     return this.dashboardService.getRepositorySettings(orgId, repositoryId);
   }
 
   @Patch('repositories/:repositoryId/settings')
+  @Roles('admin')
   updateRepositorySettings(
     @CurrentOrg() orgId: string,
     @Param('repositoryId') repositoryId: string,
@@ -51,11 +111,13 @@ export class DashboardController {
   }
 
   @Get('repositories/:repositoryId/project-profile')
+  @Roles('admin')
   getProjectProfile(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
     return this.dashboardService.getProjectProfile(orgId, repositoryId);
   }
 
   @Patch('repositories/:repositoryId/project-profile')
+  @Roles('admin')
   updateProjectProfile(
     @CurrentOrg() orgId: string,
     @Param('repositoryId') repositoryId: string,
@@ -65,6 +127,7 @@ export class DashboardController {
   }
 
   @Post('repositories/:repositoryId/review-runs/:reviewRunId/notify')
+  @Roles('admin')
   notifyReviewRun(
     @CurrentOrg() orgId: string,
     @Param('repositoryId') repositoryId: string,
@@ -74,16 +137,19 @@ export class DashboardController {
   }
 
   @Get('repositories/:repositoryId/pull-requests')
+  @Roles('admin')
   listPullRequests(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
     return this.dashboardService.listPullRequests(orgId, repositoryId);
   }
 
   @Get('repositories/:repositoryId/pushes')
+  @Roles('admin')
   listPushes(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
     return this.dashboardService.listPushes(orgId, repositoryId);
   }
 
   @Post('repositories/:repositoryId/pull-requests/:pullRequestId/merge')
+  @Roles('admin')
   mergePullRequest(
     @CurrentOrg() orgId: string,
     @Param('repositoryId') repositoryId: string,
@@ -93,11 +159,13 @@ export class DashboardController {
   }
 
   @Get('repositories/:repositoryId/promotions')
+  @Roles('admin')
   listPromotions(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
     return this.dashboardService.listPromotions(orgId, repositoryId);
   }
 
   @Post('repositories/:repositoryId/promotions')
+  @Roles('admin')
   requestPromotion(
     @CurrentOrg() orgId: string,
     @CurrentUser() userId: string,
@@ -108,11 +176,13 @@ export class DashboardController {
   }
 
   @Post('promotions/:promotionId/approve')
+  @Roles('admin')
   approvePromotion(@CurrentOrg() orgId: string, @CurrentUser() userId: string, @Param('promotionId') promotionId: string) {
     return this.dashboardService.decidePromotion(orgId, promotionId, userId, 'approved');
   }
 
   @Post('promotions/:promotionId/reject')
+  @Roles('admin')
   rejectPromotion(
     @CurrentOrg() orgId: string,
     @CurrentUser() userId: string,
@@ -122,23 +192,14 @@ export class DashboardController {
     return this.dashboardService.decidePromotion(orgId, promotionId, userId, 'rejected', body?.notes);
   }
 
-  @Get('review-runs/:reviewRunId')
-  getReviewRun(@CurrentOrg() orgId: string, @Param('reviewRunId') reviewRunId: string) {
-    return this.dashboardService.getReviewRun(orgId, reviewRunId);
-  }
-
-  @Get('review-runs/:reviewRunId/diff')
-  async getReviewRunDiff(@CurrentOrg() orgId: string, @Param('reviewRunId') reviewRunId: string) {
-    const diff = await this.dashboardService.getReviewRunDiff(orgId, reviewRunId);
-    return { diff };
-  }
-
   @Get('developers')
+  @Roles('admin')
   listDevelopers(@CurrentOrg() orgId: string) {
     return this.dashboardService.listDevelopers(orgId);
   }
 
   @Get('overview')
+  @Roles('admin')
   getOverview(@CurrentOrg() orgId: string) {
     return this.dashboardService.getOverview(orgId);
   }

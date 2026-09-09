@@ -1,7 +1,11 @@
-import { BadRequestException, Controller, Get, Query, Req, Res } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { randomBytes } from 'crypto';
+import { getPool } from '@devsentinel/database';
 import { AuthService } from './auth.service';
+import { JwtAuthGuard } from '../../common/jwtAuth.guard';
+import { CurrentOrg } from '../../common/currentOrg.decorator';
+import { CurrentUser } from '../../common/currentUser.decorator';
 
 // Secure cookies exigen HTTPS; en local (PUBLIC_WEB_ORIGIN=http://localhost) el
 // navegador las descarta en silencio si quedan marcadas secure sobre HTTP plano.
@@ -50,14 +54,23 @@ export class AuthController {
     }
     const userId = await this.authService.upsertUser(githubUser);
 
-    const organizationId = await this.authService.findOrganizationForLogin(githubUser.login);
+    // Camino 1: es quien instaló la GitHub App (su login coincide con el slug de la
+    // org) → admin. Camino 2: ya es miembro por invitación previa, aunque su login no
+    // coincida con ningún slug. Si ninguno aplica, no tiene organización todavía.
+    let organizationId = await this.authService.findOrganizationForLogin(githubUser.login);
+    if (organizationId) {
+      await this.authService.ensureMembership(organizationId, userId);
+    } else {
+      organizationId = await this.authService.findOrganizationForUser(userId);
+    }
+
     if (!organizationId) {
       const appSlug = process.env.GITHUB_APP_SLUG ?? '';
       res.redirect(`https://github.com/apps/${appSlug}/installations/new`);
       return;
     }
 
-    await this.authService.ensureMembership(organizationId, userId);
+    await this.authService.linkDeveloperRecords(organizationId, userId, githubUser.login, githubUser.email);
     const token = this.authService.issueSessionToken(userId, organizationId);
 
     res.cookie('session', token, {
@@ -67,5 +80,24 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
     res.redirect(process.env.PUBLIC_WEB_ORIGIN ?? '/');
+  }
+
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async me(@CurrentOrg() orgId: string, @CurrentUser() userId: string) {
+    const role = await this.authService.getMembershipRole(orgId, userId);
+    const { rows } = await getPool().query(
+      'SELECT name, avatar_url, email, github_user_id FROM users WHERE id = $1',
+      [userId],
+    );
+    const user = rows[0];
+    return {
+      userId,
+      orgId,
+      role,
+      name: user?.name ?? null,
+      avatarUrl: user?.avatar_url ?? null,
+      email: user?.email ?? null,
+    };
   }
 }

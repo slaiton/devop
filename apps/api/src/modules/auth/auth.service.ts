@@ -67,6 +67,16 @@ export class AuthService {
     return rows[0]?.id ?? null;
   }
 
+  /** Cubre el caso de alguien invitado cuyo login de GitHub no coincide con el slug de
+   * la organización (ese matching solo aplica a quien instaló la App). org_memberships
+   * tiene RLS, así que resolver el tenant sin conocerlo aún exige la función
+   * SECURITY DEFINER creada en la migración 0012 (mismo patrón que
+   * resolve_organization_for_installation). */
+  async findOrganizationForUser(userId: string): Promise<string | null> {
+    const { rows } = await getPool().query('SELECT resolve_organization_for_user($1) AS organization_id', [userId]);
+    return rows[0]?.organization_id ?? null;
+  }
+
   async ensureMembership(organizationId: string, userId: string): Promise<void> {
     await withTenant(organizationId, async (client) => {
       await client.query(
@@ -76,6 +86,61 @@ export class AuthService {
         [organizationId, userId],
       );
     });
+  }
+
+  /** Enlaza retroactivamente contribuciones (developers) resueltas por login/email de
+   * commit con la cuenta que acaba de loguearse, para que su vista personal las vea. */
+  async linkDeveloperRecords(organizationId: string, userId: string, githubLogin: string, email: string | null): Promise<void> {
+    await withTenant(organizationId, async (client) => {
+      await client.query(
+        `UPDATE developers SET user_id = $1
+         WHERE organization_id = $2 AND user_id IS NULL
+           AND ((github_login IS NOT NULL AND github_login = $3) OR ($4::text IS NOT NULL AND email = $4))`,
+        [userId, organizationId, githubLogin, email],
+      );
+    });
+  }
+
+  async getMembershipRole(organizationId: string, userId: string): Promise<string | null> {
+    return withTenant(organizationId, async (client) => {
+      const { rows } = await client.query(
+        'SELECT role FROM org_memberships WHERE organization_id = $1 AND user_id = $2',
+        [organizationId, userId],
+      );
+      return rows[0]?.role ?? null;
+    });
+  }
+
+  /** Invita a alguien por username de GitHub (API pública, sin auth) con rol "usuario"
+   * (developer) — no requiere que esa persona haya iniciado sesión todavía. */
+  async inviteUser(organizationId: string, githubLogin: string): Promise<{ userId: string }> {
+    const res = await fetch(`https://api.github.com/users/${encodeURIComponent(githubLogin)}`, {
+      headers: { 'User-Agent': 'devsentinel-ai', Accept: 'application/vnd.github+json' },
+    });
+    if (!res.ok) {
+      throw new Error(`no se encontró la cuenta de GitHub "${githubLogin}"`);
+    }
+    const ghUser = (await res.json()) as { id: number; login: string; name: string | null; avatar_url: string };
+
+    const { rows } = await getPool().query(
+      `INSERT INTO users (github_user_id, email, name, avatar_url)
+       VALUES ($1, NULL, $2, $3)
+       ON CONFLICT (github_user_id) DO UPDATE SET name = COALESCE(users.name, $2), avatar_url = $3
+       RETURNING id`,
+      [ghUser.id, ghUser.name ?? ghUser.login, ghUser.avatar_url],
+    );
+    const userId = rows[0].id as string;
+
+    await withTenant(organizationId, async (client) => {
+      await client.query(
+        `INSERT INTO org_memberships (organization_id, user_id, role)
+         VALUES ($1, $2, 'developer')
+         ON CONFLICT (organization_id, user_id) DO NOTHING`,
+        [organizationId, userId],
+      );
+    });
+
+    return { userId };
   }
 
   issueSessionToken(userId: string, organizationId: string): string {

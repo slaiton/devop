@@ -1,4 +1,6 @@
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
+import { getSession } from './session';
 
 interface Repository {
   id: string;
@@ -7,21 +9,20 @@ interface Repository {
   webhook_status: string;
 }
 
-async function fetchRepositories(): Promise<Repository[] | null> {
+async function fetchRepositories(): Promise<Repository[]> {
   const cookieHeader = cookies().toString();
   const res = await fetch(`${process.env.API_INTERNAL_URL}/api/dashboard/repositories`, {
     headers: { Cookie: cookieHeader },
     cache: 'no-store',
   });
-  if (res.status === 401) return null;
   if (!res.ok) throw new Error(`failed to load repositories: ${res.status}`);
   return res.json();
 }
 
 export default async function HomePage() {
-  const repositories = await fetchRepositories();
+  const session = await getSession();
 
-  if (!repositories) {
+  if (!session) {
     return (
       <main>
         <h1>DevSentinel AI</h1>
@@ -31,10 +32,17 @@ export default async function HomePage() {
     );
   }
 
+  if (session.role !== 'admin') {
+    redirect('/me');
+  }
+
+  const repositories = await fetchRepositories();
+
   return (
     <main>
       <p>
-        <a href="/overview">Ver pendientes</a> · <a href="/developers">Developers</a>
+        <a href="/overview">Ver pendientes</a> · <a href="/developers">Developers</a> ·{' '}
+        <a href="/team">Equipo</a> · <a href="/me">Mi perfil</a>
       </p>
       <h1>Repositorios</h1>
       {repositories.length === 0 ? (

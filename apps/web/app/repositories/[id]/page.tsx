@@ -5,7 +5,9 @@ import { RequestPromotionButton, PromotionDecisionButtons } from './PromotionAct
 import { RepoSettingsForm } from './RepoSettingsForm';
 import { NotifyButton } from './NotifyButton';
 import { ProjectProfileForm } from './ProjectProfileForm';
+import { CreatePullRequestButton, MergePullRequestButton } from './PullRequestActions';
 import { GateBadge } from '../../GateBadge';
+import { getSession } from '../../session';
 
 interface PullRequestRow {
   id: string;
@@ -53,6 +55,18 @@ interface RepoSettings {
   monitored_branches: string[];
   promotion_source_branch: string;
   promotion_target_branch: string;
+  auto_create_pr_on_push: boolean;
+}
+
+interface DevSentinelPrRow {
+  id: string;
+  github_pr_number: number;
+  title: string;
+  source_branch: string;
+  target_branch: string;
+  status: 'open' | 'merged' | 'closed';
+  created_by: 'github' | 'devsentinel';
+  source_review_run_id: string | null;
 }
 
 interface ProjectProfileRow {
@@ -82,14 +96,26 @@ async function fetchJson<T>(path: string): Promise<T> {
 }
 
 export default async function RepositoryPullRequestsPage({ params }: { params: Promise<{ id: string }> }) {
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return (
+      <main>
+        <p>No autorizado.</p>
+      </main>
+    );
+  }
+
   const { id } = await params;
-  const [pullRequests, pushes, promotions, settings, projectProfile] = await Promise.all([
+  const [pullRequests, pushes, promotions, settings, projectProfile, devPullRequests] = await Promise.all([
     fetchJson<PullRequestRow[]>(`/dashboard/repositories/${id}/pull-requests`),
     fetchJson<PushRow[]>(`/dashboard/repositories/${id}/pushes`),
     fetchJson<PromotionRow[]>(`/dashboard/repositories/${id}/promotions`),
     fetchJson<RepoSettings>(`/dashboard/repositories/${id}/settings`),
     fetchJson<ProjectProfileRow>(`/dashboard/repositories/${id}/project-profile`),
+    fetchJson<DevSentinelPrRow[]>(`/pull-requests/repository/${id}`),
   ]);
+
+  const reviewRunsWithPr = new Set(devPullRequests.map((pr) => pr.source_review_run_id).filter(Boolean));
 
   const pendingPromotions = promotions.filter((p) => p.status === 'pending');
 
@@ -170,6 +196,36 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
         </table>
       )}
 
+      <h1>Pull Requests de DevSentinel</h1>
+      {devPullRequests.length === 0 ? (
+        <p>Todavía no se ha creado ningún Pull Request desde un push analizado.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Título</th>
+              <th>Rama</th>
+              <th>Origen</th>
+              <th>Estado</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {devPullRequests.map((pr) => (
+              <tr key={pr.id}>
+                <td>{pr.github_pr_number}</td>
+                <td>{pr.source_review_run_id ? <Link href={`/review-runs/${pr.source_review_run_id}`}>{pr.title}</Link> : pr.title}</td>
+                <td>{pr.source_branch} → {pr.target_branch}</td>
+                <td>{pr.created_by === 'devsentinel' ? 'DevSentinel' : 'GitHub'}</td>
+                <td>{pr.status}</td>
+                <td>{pr.status === 'open' && <MergePullRequestButton pullRequestId={pr.id} />}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
       <h1>Pushes</h1>
       {pushes.length === 0 ? (
         <p>Todavía no hay pushes analizados en las ramas monitoreadas.</p>
@@ -219,6 +275,9 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
                       targetBranch={settings.promotion_target_branch}
                     />
                   )}
+                  {run.gate_decision === 'apto' && !reviewRunsWithPr.has(run.id) && (
+                    <CreatePullRequestButton repositoryId={id} reviewRunId={run.id} />
+                  )}
                 </div>
               </div>
             );
@@ -252,6 +311,7 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
         monitoredBranches={settings.monitored_branches}
         promotionSourceBranch={settings.promotion_source_branch}
         promotionTargetBranch={settings.promotion_target_branch}
+        autoCreatePrOnPush={settings.auto_create_pr_on_push}
       />
     </main>
   );

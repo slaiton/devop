@@ -3,6 +3,7 @@ import { withTenant } from '@devsentinel/database';
 import type { GitProviderPort } from '@devsentinel/git-providers';
 import type { LlmPort, ProjectProfile, ReviewResult } from '@devsentinel/llm-port';
 import type { ReviewJobPayload } from '@devsentinel/event-contracts';
+import { buildPullRequestContent } from '@devsentinel/pr-content';
 import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
 import { RagContextService } from './ragContext.service';
@@ -101,6 +102,7 @@ export class ReviewService {
 
       await this.persistResult(payload, result, gateDecision, analyzedFiles);
       await this.publishToGithub(payload, result, gateDecision);
+      await this.maybeAutoCreatePullRequest(payload, result, gateDecision);
     } catch (err) {
       await this.markFailed(payload, (err as Error).message);
       throw err;
@@ -234,6 +236,110 @@ export class ReviewService {
       conclusion,
       title,
       summary: result.resumen_ejecutivo,
+    });
+  }
+
+  /** Crea el PR automáticamente cuando el repo tiene auto_create_pr_on_push activo y el
+   * push a la rama origen salió APTO — no tiene sentido abrir un PR de código que la
+   * propia IA marcó NO APTO. Sin el flag, la creación queda solo para el botón manual
+   * (PullRequestsService en apps/api). */
+  private async maybeAutoCreatePullRequest(
+    payload: ReviewJobPayload,
+    result: ReviewResult,
+    gateDecision: GateDecision,
+  ): Promise<void> {
+    if (payload.pullNumber || gateDecision !== 'apto') return;
+
+    const config = await this.getPrAutoCreateConfig(payload.organizationId, payload.repositoryId);
+    if (!config.auto_create_pr_on_push || payload.branch !== config.promotion_source_branch) return;
+
+    const existing = await this.gitAdapter.findOpenPullRequest({
+      installationId: payload.installationId,
+      owner: payload.owner,
+      repo: payload.repo,
+      head: payload.branch,
+      base: config.promotion_target_branch,
+    });
+    if (existing) return;
+
+    const { title, body } = buildPullRequestContent({
+      repositoryFullName: `${payload.owner}/${payload.repo}`,
+      branch: payload.branch,
+      commitSha: payload.commitSha,
+      reviewRun: {
+        gate_decision: gateDecision,
+        quality_score: result.quality_score,
+        risk_level: result.risk_level,
+        summary: result.resumen_ejecutivo,
+      },
+      findings: result.findings.map((f) => ({
+        ...f,
+        line_start: f.line_start ?? null,
+        blocking: false,
+        violated_rule: f.violated_rule ?? null,
+      })),
+    });
+
+    const created = await this.gitAdapter.createPullRequest({
+      installationId: payload.installationId,
+      owner: payload.owner,
+      repo: payload.repo,
+      head: payload.branch,
+      base: config.promotion_target_branch,
+      title,
+      body,
+    });
+
+    await withTenant(payload.organizationId, async (client) => {
+      await client.query(
+        `INSERT INTO pull_requests
+           (organization_id, repository_id, github_pr_number, title, source_branch, target_branch, author_login, status, source_review_run_id, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'open', $8, 'devsentinel')
+         ON CONFLICT (repository_id, github_pr_number) DO NOTHING`,
+        [
+          payload.organizationId,
+          payload.repositoryId,
+          created.number,
+          title,
+          payload.branch,
+          config.promotion_target_branch,
+          created.authorLogin,
+          payload.reviewRunId,
+        ],
+      );
+    });
+
+    for (const finding of result.findings) {
+      if (!finding.line_start) continue;
+      await this.gitAdapter.postReviewComment({
+        installationId: payload.installationId,
+        owner: payload.owner,
+        repo: payload.repo,
+        pullNumber: created.number,
+        commitSha: payload.commitSha,
+        filePath: finding.file_path,
+        line: finding.line_start,
+        body: `**[${finding.severity.toUpperCase()}] ${finding.title}**${finding.violated_rule ? `\n_Regla incumplida: ${finding.violated_rule}_` : ''}\n\n${finding.explanation}`,
+      });
+    }
+  }
+
+  private async getPrAutoCreateConfig(
+    organizationId: string,
+    repositoryId: string,
+  ): Promise<{ auto_create_pr_on_push: boolean; promotion_source_branch: string; promotion_target_branch: string }> {
+    return withTenant(organizationId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT auto_create_pr_on_push,
+                COALESCE(promotion_source_branch, 'staging') AS promotion_source_branch,
+                COALESCE(promotion_target_branch, 'main') AS promotion_target_branch
+         FROM quality_gate_configs
+         WHERE organization_id = $1 AND (repository_id = $2 OR repository_id IS NULL)
+         ORDER BY repository_id NULLS LAST
+         LIMIT 1`,
+        [organizationId, repositoryId],
+      );
+      return rows[0] ?? { auto_create_pr_on_push: false, promotion_source_branch: 'staging', promotion_target_branch: 'main' };
     });
   }
 

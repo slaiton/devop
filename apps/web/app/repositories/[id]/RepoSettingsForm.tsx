@@ -8,16 +8,19 @@ export function RepoSettingsForm({
   monitoredBranches,
   promotionSourceBranch,
   promotionTargetBranch,
+  autoCreatePrOnPush,
 }: {
   repositoryId: string;
   monitoredBranches: string[];
   promotionSourceBranch: string;
   promotionTargetBranch: string;
+  autoCreatePrOnPush: boolean;
 }) {
   const router = useRouter();
   const [branches, setBranches] = useState(monitoredBranches.join(', '));
   const [sourceBranch, setSourceBranch] = useState(promotionSourceBranch);
   const [targetBranch, setTargetBranch] = useState(promotionTargetBranch);
+  const [autoCreatePr, setAutoCreatePr] = useState(autoCreatePrOnPush);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -38,6 +41,7 @@ export function RepoSettingsForm({
             .filter(Boolean),
           promotionSourceBranch: sourceBranch.trim(),
           promotionTargetBranch: targetBranch.trim(),
+          autoCreatePrOnPush: autoCreatePr,
         }),
       });
       if (!res.ok) {
@@ -69,6 +73,12 @@ export function RepoSettingsForm({
       <p>
         <label>
           Rama destino de promoción: <input value={targetBranch} onChange={(e) => setTargetBranch(e.target.value)} />
+        </label>
+      </p>
+      <p>
+        <label style={{ flexDirection: 'row', alignItems: 'center', gap: '0.4rem' }}>
+          <input type="checkbox" checked={autoCreatePr} onChange={(e) => setAutoCreatePr(e.target.checked)} style={{ minWidth: 0 }} />
+          Crear Pull Request automáticamente cuando un push a la rama origen salga APTO
         </label>
       </p>
       <button type="submit" disabled={loading}>

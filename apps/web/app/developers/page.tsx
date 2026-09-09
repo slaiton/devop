@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 import Link from 'next/link';
+import { getSession } from '../session';
 
 interface DeveloperRow {
   id: string;
@@ -24,6 +25,15 @@ async function fetchDevelopers(): Promise<DeveloperRow[]> {
 }
 
 export default async function DevelopersPage() {
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return (
+      <main>
+        <p>No autorizado.</p>
+      </main>
+    );
+  }
+
   const developers = await fetchDevelopers();
 
   return (

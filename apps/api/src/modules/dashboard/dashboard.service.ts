@@ -1,7 +1,12 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { withTenant } from '@devsentinel/database';
 import { GithubAdapter } from '@devsentinel/git-providers';
 import { EmailService } from '../../common/email.service';
+
+interface Actor {
+  userId: string;
+  role: string;
+}
 
 const SEVERITY_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 
@@ -33,7 +38,8 @@ export class DashboardService {
       const { rows } = await client.query(
         `SELECT r.monitored_branches,
                 COALESCE(qgc.promotion_source_branch, 'staging') AS promotion_source_branch,
-                COALESCE(qgc.promotion_target_branch, 'main') AS promotion_target_branch
+                COALESCE(qgc.promotion_target_branch, 'main') AS promotion_target_branch,
+                COALESCE(qgc.auto_create_pr_on_push, false) AS auto_create_pr_on_push
          FROM repositories r
          LEFT JOIN quality_gate_configs qgc
            ON qgc.organization_id = r.organization_id AND qgc.repository_id = r.id
@@ -48,7 +54,12 @@ export class DashboardService {
   async updateRepositorySettings(
     orgId: string,
     repositoryId: string,
-    settings: { monitoredBranches?: string[]; promotionSourceBranch?: string; promotionTargetBranch?: string },
+    settings: {
+      monitoredBranches?: string[];
+      promotionSourceBranch?: string;
+      promotionTargetBranch?: string;
+      autoCreatePrOnPush?: boolean;
+    },
   ) {
     await withTenant(orgId, async (client) => {
       if (settings.monitoredBranches) {
@@ -57,14 +68,21 @@ export class DashboardService {
           repositoryId,
         ]);
       }
-      if (settings.promotionSourceBranch || settings.promotionTargetBranch) {
+      if (settings.promotionSourceBranch || settings.promotionTargetBranch || settings.autoCreatePrOnPush !== undefined) {
         await client.query(
-          `INSERT INTO quality_gate_configs (organization_id, repository_id, promotion_source_branch, promotion_target_branch)
-           VALUES ($1, $2, COALESCE($3, 'staging'), COALESCE($4, 'main'))
+          `INSERT INTO quality_gate_configs (organization_id, repository_id, promotion_source_branch, promotion_target_branch, auto_create_pr_on_push)
+           VALUES ($1, $2, COALESCE($3, 'staging'), COALESCE($4, 'main'), COALESCE($5, false))
            ON CONFLICT (organization_id, repository_id) DO UPDATE
              SET promotion_source_branch = COALESCE($3, quality_gate_configs.promotion_source_branch),
-                 promotion_target_branch = COALESCE($4, quality_gate_configs.promotion_target_branch)`,
-          [orgId, repositoryId, settings.promotionSourceBranch ?? null, settings.promotionTargetBranch ?? null],
+                 promotion_target_branch = COALESCE($4, quality_gate_configs.promotion_target_branch),
+                 auto_create_pr_on_push = COALESCE($5, quality_gate_configs.auto_create_pr_on_push)`,
+          [
+            orgId,
+            repositoryId,
+            settings.promotionSourceBranch ?? null,
+            settings.promotionTargetBranch ?? null,
+            settings.autoCreatePrOnPush ?? null,
+          ],
         );
       }
     });
@@ -372,18 +390,21 @@ export class DashboardService {
     });
   }
 
-  async getReviewRun(orgId: string, reviewRunId: string) {
+  async getReviewRun(orgId: string, reviewRunId: string, actor: Actor) {
     return withTenant(orgId, async (client) => {
       const { rows: runRows } = await client.query(
         `SELECT rr.*, r.full_name AS repository_full_name,
-                pr.github_pr_number, pr.title AS pull_request_title
+                pr.github_pr_number, pr.title AS pull_request_title,
+                d.user_id AS developer_user_id
          FROM review_runs rr
          JOIN repositories r ON r.id = rr.repository_id
          LEFT JOIN pull_requests pr ON pr.id = rr.pull_request_id
+         LEFT JOIN developers d ON d.id = rr.developer_id
          WHERE rr.id = $1`,
         [reviewRunId],
       );
       if (!runRows[0]) return null;
+      this.assertCanViewReviewRun(runRows[0], actor);
 
       const { rows: findingRows } = await client.query(
         `SELECT * FROM findings WHERE review_run_id = $1
@@ -391,23 +412,27 @@ export class DashboardService {
            WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) DESC`,
         [reviewRunId],
       );
-      return { ...runRows[0], findings: findingRows };
+      const { developer_user_id, ...run } = runRows[0];
+      return { ...run, findings: findingRows };
     });
   }
 
-  async getReviewRunDiff(orgId: string, reviewRunId: string): Promise<string> {
+  async getReviewRunDiff(orgId: string, reviewRunId: string, actor: Actor): Promise<string> {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `SELECT rr.commit_sha, r.full_name, gi.installation_id, pr.github_pr_number
+        `SELECT rr.commit_sha, r.full_name, gi.installation_id, pr.github_pr_number,
+                d.user_id AS developer_user_id
          FROM review_runs rr
          JOIN repositories r ON r.id = rr.repository_id
          JOIN github_installations gi ON gi.id = r.github_installation_id
          LEFT JOIN pull_requests pr ON pr.id = rr.pull_request_id
+         LEFT JOIN developers d ON d.id = rr.developer_id
          WHERE rr.id = $1`,
         [reviewRunId],
       );
       const run = rows[0];
       if (!run) throw new NotFoundException('review run not found');
+      this.assertCanViewReviewRun(run, actor);
 
       const [owner, repo] = String(run.full_name).split('/');
       const installationId = Number(run.installation_id);
@@ -415,6 +440,76 @@ export class DashboardService {
       return run.github_pr_number
         ? this.adapter.getPullRequestDiff({ installationId, owner, repo, pullNumber: run.github_pr_number })
         : this.adapter.getCommitDiff({ installationId, owner, repo, commitSha: run.commit_sha });
+    });
+  }
+
+  /** admin ve cualquier review run de la org; un usuario ("developer") solo el suyo,
+   * resuelto vía developers.user_id enlazado al loguearse. */
+  private assertCanViewReviewRun(run: { developer_user_id: string | null }, actor: Actor): void {
+    if (actor.role === 'admin') return;
+    if (run.developer_user_id && run.developer_user_id === actor.userId) return;
+    throw new ForbiddenException('no tienes acceso a este review run');
+  }
+
+  async getMyProfile(orgId: string, userId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT d.id AS developer_id, d.github_login, d.email, d.display_name,
+                count(rr.id) AS total_reviews,
+                count(*) FILTER (WHERE rr.gate_decision = 'apto') AS apto_count,
+                count(*) FILTER (WHERE rr.gate_decision = 'no_apto') AS no_apto_count,
+                round(avg(rr.quality_score)) AS avg_quality_score
+         FROM developers d
+         LEFT JOIN review_runs rr ON rr.developer_id = d.id
+         WHERE d.user_id = $1 AND d.organization_id = $2
+         GROUP BY d.id`,
+        [userId, orgId],
+      );
+      return (
+        rows[0] ?? {
+          developer_id: null,
+          github_login: null,
+          email: null,
+          display_name: null,
+          total_reviews: 0,
+          apto_count: 0,
+          no_apto_count: 0,
+          avg_quality_score: null,
+        }
+      );
+    });
+  }
+
+  async getMyReviews(orgId: string, userId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT rr.id, rr.repository_id, r.full_name, rr.branch, rr.commit_sha, rr.trigger,
+                rr.gate_decision, rr.risk_level, rr.quality_score, rr.notified_at, rr.started_at,
+                pr.github_pr_number, pr.title AS pull_request_title
+         FROM review_runs rr
+         JOIN repositories r ON r.id = rr.repository_id
+         JOIN developers d ON d.id = rr.developer_id
+         LEFT JOIN pull_requests pr ON pr.id = rr.pull_request_id
+         WHERE d.user_id = $1 AND rr.organization_id = $2
+         ORDER BY rr.started_at DESC
+         LIMIT 100`,
+        [userId, orgId],
+      );
+      return rows;
+    });
+  }
+
+  async listTeam(orgId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT om.role, u.id AS user_id, u.name, u.email, u.avatar_url, om.created_at
+         FROM org_memberships om
+         JOIN users u ON u.id = om.user_id
+         WHERE om.organization_id = $1
+         ORDER BY om.created_at`,
+        [orgId],
+      );
+      return rows;
     });
   }
 

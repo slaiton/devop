@@ -5,6 +5,7 @@ import type { Request } from 'express';
 export interface SessionPayload {
   sub: string;
   orgId: string;
+  role?: string;
 }
 
 export type RequestWithSession = Request & { session?: SessionPayload };

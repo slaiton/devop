@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { GateBadge } from '../GateBadge';
+import { getSession } from '../session';
 
 interface RepositoryRow {
   id: string;
@@ -35,6 +36,15 @@ async function fetchOverview(): Promise<Overview> {
 }
 
 export default async function OverviewPage() {
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return (
+      <main>
+        <p>No autorizado.</p>
+      </main>
+    );
+  }
+
   const { repositories, pendingPushes } = await fetchOverview();
 
   return (

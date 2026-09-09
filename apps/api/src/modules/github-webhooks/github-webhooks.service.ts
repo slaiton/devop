@@ -147,6 +147,20 @@ export class GithubWebhooksService {
       return rows[0].id as string;
     });
 
+    // Si este commit ya fue analizado (p. ej. vino de un push a la rama origen y el PR
+    // se creó/detectó a partir de ese análisis), se reutiliza — no se vuelve a gastar
+    // un análisis de IA para el mismo commit.
+    const existingRunId = await this.findCompletedReviewRunForCommit(orgId, repositoryId, pr.head.sha);
+    if (existingRunId) {
+      await withTenant(orgId, async (client) => {
+        await client.query(`UPDATE review_runs SET pull_request_id = $1 WHERE id = $2 AND pull_request_id IS NULL`, [
+          pullRequestId,
+          existingRunId,
+        ]);
+      });
+      return;
+    }
+
     const developerId = await this.resolveDeveloper(orgId, { githubLogin: pr.user.login });
 
     const reviewRunId = await this.createReviewRun(
@@ -171,6 +185,23 @@ export class GithubWebhooksService {
       commitSha: pr.head.sha,
       branch: pr.head.ref,
       pullNumber: pr.number,
+    });
+  }
+
+  private async findCompletedReviewRunForCommit(
+    orgId: string,
+    repositoryId: string,
+    commitSha: string,
+  ): Promise<string | null> {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT id FROM review_runs
+         WHERE repository_id = $1 AND commit_sha = $2 AND status = 'completed'
+         ORDER BY started_at DESC
+         LIMIT 1`,
+        [repositoryId, commitSha],
+      );
+      return rows[0]?.id ?? null;
     });
   }
 

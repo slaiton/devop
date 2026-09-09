@@ -4,9 +4,13 @@ import { createAppAuth } from '@octokit/auth-app';
 import type {
   CheckRunParams,
   CommitRef,
+  CreatedPullRequest,
+  CreatePullRequestParams,
+  FindOpenPullRequestParams,
   GitProviderPort,
   MergeBranchParams,
   PullRequestRef,
+  PullRequestStatus,
   RecentCommitInfo,
   ReviewCommentParams,
   SummaryCommentParams,
@@ -142,6 +146,55 @@ export class GithubAdapter implements GitProviderPort {
       author: c.commit.author?.name ?? c.author?.login ?? null,
       date: c.commit.author?.date ?? null,
     }));
+  }
+
+  async findOpenPullRequest(params: FindOpenPullRequestParams): Promise<{ number: number } | null> {
+    const client = this.getInstallationClient(params.installationId);
+    const { data } = await client.pulls.list({
+      owner: params.owner,
+      repo: params.repo,
+      state: 'open',
+      head: `${params.owner}:${params.head}`,
+      base: params.base,
+    });
+    return data[0] ? { number: data[0].number } : null;
+  }
+
+  async createPullRequest(params: CreatePullRequestParams): Promise<CreatedPullRequest> {
+    const client = this.getInstallationClient(params.installationId);
+    const { data } = await client.pulls.create({
+      owner: params.owner,
+      repo: params.repo,
+      head: params.head,
+      base: params.base,
+      title: params.title,
+      body: params.body,
+    });
+    return { number: data.number, htmlUrl: data.html_url, authorLogin: data.user?.login ?? 'unknown' };
+  }
+
+  async getPullRequestStatus(params: PullRequestRef): Promise<PullRequestStatus> {
+    const client = this.getInstallationClient(params.installationId);
+    const { data: pr } = await client.pulls.get({
+      owner: params.owner,
+      repo: params.repo,
+      pull_number: params.pullNumber,
+    });
+
+    const { data: checkRuns } = await client.checks.listForRef({
+      owner: params.owner,
+      repo: params.repo,
+      ref: pr.head.sha,
+    });
+
+    return {
+      state: pr.state as 'open' | 'closed',
+      draft: pr.draft ?? false,
+      mergeable: pr.mergeable,
+      mergeableState: pr.mergeable_state ?? 'unknown',
+      headSha: pr.head.sha,
+      checks: checkRuns.check_runs.map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion })),
+    };
   }
 
   private getInstallationClient(installationId: number): Octokit {
