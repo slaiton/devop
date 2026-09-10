@@ -67,12 +67,12 @@ export function RepoSettingsForm({
       </p>
       <p>
         <label>
-          Rama origen de promoción: <input value={sourceBranch} onChange={(e) => setSourceBranch(e.target.value)} />
+          Rama origen para Pull Request: <input value={sourceBranch} onChange={(e) => setSourceBranch(e.target.value)} />
         </label>
       </p>
       <p>
         <label>
-          Rama destino de promoción: <input value={targetBranch} onChange={(e) => setTargetBranch(e.target.value)} />
+          Rama destino para Pull Request: <input value={targetBranch} onChange={(e) => setTargetBranch(e.target.value)} />
         </label>
       </p>
       <p>

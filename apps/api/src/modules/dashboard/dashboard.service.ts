@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { withTenant } from '@devsentinel/database';
+import { getPool, withTenant } from '@devsentinel/database';
 import { GithubAdapter } from '@devsentinel/git-providers';
+import { getSystemSettings } from '@devsentinel/settings';
 import { EmailService } from '../../common/email.service';
 
 interface Actor {
@@ -12,13 +13,14 @@ const SEVERITY_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2
 
 @Injectable()
 export class DashboardService {
-  private readonly adapter: GithubAdapter;
+  constructor(private readonly emailService: EmailService) {}
 
-  constructor(private readonly emailService: EmailService) {
-    this.adapter = new GithubAdapter({
-      appId: process.env.GITHUB_APP_ID ?? '',
-      privateKey: (process.env.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
-      webhookSecret: process.env.GITHUB_APP_WEBHOOK_SECRET ?? '',
+  private async getAdapter(): Promise<GithubAdapter> {
+    const settings = await getSystemSettings(getPool());
+    return new GithubAdapter({
+      appId: settings?.githubAppId ?? '',
+      privateKey: (settings?.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
+      webhookSecret: settings?.githubAppWebhookSecret ?? '',
     });
   }
 
@@ -89,44 +91,34 @@ export class DashboardService {
     return this.getRepositorySettings(orgId, repositoryId);
   }
 
-  async listPullRequests(orgId: string, repositoryId: string) {
-    return withTenant(orgId, async (client) => {
-      const { rows } = await client.query(
-        `SELECT pr.id, pr.github_pr_number, pr.title, pr.status, pr.author_login,
-                pr.source_branch, pr.target_branch,
-                rr.id AS review_run_id, rr.quality_score, rr.risk_level, rr.status AS review_status
-         FROM pull_requests pr
-         LEFT JOIN LATERAL (
-           SELECT id, quality_score, risk_level, status
-           FROM review_runs
-           WHERE review_runs.pull_request_id = pr.id
-           ORDER BY started_at DESC
-           LIMIT 1
-         ) rr ON true
-         WHERE pr.repository_id = $1
-         ORDER BY pr.created_at DESC`,
-        [repositoryId],
-      );
-      return rows;
-    });
-  }
-
   async listPushes(orgId: string, repositoryId: string) {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `SELECT rr.id, rr.commit_sha, rr.branch, rr.status, rr.quality_score, rr.risk_level,
                 rr.gate_decision, rr.author_name, rr.author_email, rr.notified_at,
+                rr.reviewed_at, rr.reviewed_by,
                 rr.started_at, rr.completed_at,
-                (SELECT count(*) FROM findings f WHERE f.review_run_id = rr.id AND f.blocking) AS blocking_count,
-                p.id AS promotion_id, p.status AS promotion_status
+                (SELECT count(*) FROM findings f WHERE f.review_run_id = rr.id AND f.blocking) AS blocking_count
          FROM review_runs rr
-         LEFT JOIN promotions p ON p.review_run_id = rr.id
          WHERE rr.repository_id = $1 AND rr.trigger = 'push'
          ORDER BY rr.started_at DESC
          LIMIT 50`,
         [repositoryId],
       );
       return rows;
+    });
+  }
+
+  async markReviewed(orgId: string, repositoryId: string, reviewRunId: string, userId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `UPDATE review_runs SET reviewed_at = now(), reviewed_by = $1
+         WHERE id = $2 AND repository_id = $3 AND trigger = 'push'
+         RETURNING id, reviewed_at`,
+        [userId, reviewRunId, repositoryId],
+      );
+      if (!rows[0]) throw new NotFoundException('review run not found');
+      return rows[0];
     });
   }
 
@@ -270,126 +262,6 @@ export class DashboardService {
     });
   }
 
-  async listPromotions(orgId: string, repositoryId: string) {
-    return withTenant(orgId, async (client) => {
-      const { rows } = await client.query(
-        `SELECT id, source_branch, target_branch, commit_sha, status, notes, requested_at, decided_at
-         FROM promotions
-         WHERE repository_id = $1
-         ORDER BY requested_at DESC
-         LIMIT 50`,
-        [repositoryId],
-      );
-      return rows;
-    });
-  }
-
-  async requestPromotion(orgId: string, repositoryId: string, reviewRunId: string, userId: string) {
-    return withTenant(orgId, async (client) => {
-      const { rows: runRows } = await client.query(
-        `SELECT rr.commit_sha, rr.branch, rr.gate_decision, rr.trigger,
-                COALESCE(qgc.promotion_source_branch, 'staging') AS promotion_source_branch,
-                COALESCE(qgc.promotion_target_branch, 'main') AS promotion_target_branch
-         FROM review_runs rr
-         JOIN repositories r ON r.id = rr.repository_id
-         LEFT JOIN quality_gate_configs qgc ON qgc.organization_id = r.organization_id AND qgc.repository_id = r.id
-         WHERE rr.id = $1 AND rr.repository_id = $2`,
-        [reviewRunId, repositoryId],
-      );
-      const run = runRows[0];
-      if (!run) throw new NotFoundException('review run not found');
-      if (run.trigger !== 'push') throw new BadRequestException('only pushes can be promoted');
-      if (run.gate_decision !== 'apto') throw new BadRequestException('quality gate did not pass for this commit');
-      if (run.branch !== run.promotion_source_branch) {
-        throw new BadRequestException(`only pushes to ${run.promotion_source_branch} can be promoted`);
-      }
-
-      const { rows } = await client.query(
-        `INSERT INTO promotions
-           (organization_id, repository_id, review_run_id, source_branch, target_branch, commit_sha, requested_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (repository_id, commit_sha) DO NOTHING
-         RETURNING id, status`,
-        [orgId, repositoryId, reviewRunId, run.branch, run.promotion_target_branch, run.commit_sha, userId],
-      );
-      if (!rows[0]) throw new BadRequestException('a promotion for this commit already exists');
-      return rows[0];
-    });
-  }
-
-  async decidePromotion(
-    orgId: string,
-    promotionId: string,
-    userId: string,
-    decision: 'approved' | 'rejected',
-    notes?: string,
-  ) {
-    return withTenant(orgId, async (client) => {
-      const { rows } = await client.query(
-        `SELECT p.source_branch, p.target_branch, p.status, r.full_name, gi.installation_id
-         FROM promotions p
-         JOIN repositories r ON r.id = p.repository_id
-         JOIN github_installations gi ON gi.id = r.github_installation_id
-         WHERE p.id = $1`,
-        [promotionId],
-      );
-      const promotion = rows[0];
-      if (!promotion) throw new NotFoundException('promotion not found');
-      if (promotion.status !== 'pending') throw new BadRequestException(`promotion is already ${promotion.status}`);
-
-      if (decision === 'approved') {
-        const [owner, repo] = String(promotion.full_name).split('/');
-        const result = await this.adapter.mergeBranch({
-          installationId: Number(promotion.installation_id),
-          owner,
-          repo,
-          base: promotion.target_branch,
-          head: promotion.source_branch,
-        });
-        if (result.conflict) {
-          throw new BadRequestException(
-            `merge conflict promoting ${promotion.source_branch} -> ${promotion.target_branch}; resuélvelo manualmente en GitHub y reintenta`,
-          );
-        }
-      }
-
-      await client.query(
-        `UPDATE promotions SET status = $1, decided_by = $2, notes = $3, decided_at = now() WHERE id = $4`,
-        [decision, userId, notes ?? null, promotionId],
-      );
-      return { status: decision };
-    });
-  }
-
-  async mergePullRequest(orgId: string, repositoryId: string, pullRequestId: string): Promise<{ merged: boolean }> {
-    return withTenant(orgId, async (client) => {
-      const { rows } = await client.query(
-        `SELECT pr.github_pr_number, pr.status, r.full_name, gi.installation_id
-         FROM pull_requests pr
-         JOIN repositories r ON r.id = pr.repository_id
-         JOIN github_installations gi ON gi.id = r.github_installation_id
-         WHERE pr.id = $1 AND pr.repository_id = $2`,
-        [pullRequestId, repositoryId],
-      );
-      const pr = rows[0];
-      if (!pr) throw new NotFoundException('pull request not found');
-      if (pr.status !== 'open') throw new BadRequestException(`pull request is already ${pr.status}`);
-
-      const [owner, repo] = String(pr.full_name).split('/');
-      await this.adapter.mergePullRequest({
-        installationId: Number(pr.installation_id),
-        owner,
-        repo,
-        pullNumber: pr.github_pr_number,
-      });
-
-      await client.query(`UPDATE pull_requests SET status = 'merged', merged_at = now() WHERE id = $1`, [
-        pullRequestId,
-      ]);
-      return { merged: true };
-    });
-  }
-
   async getReviewRun(orgId: string, reviewRunId: string, actor: Actor) {
     return withTenant(orgId, async (client) => {
       const { rows: runRows } = await client.query(
@@ -436,10 +308,11 @@ export class DashboardService {
 
       const [owner, repo] = String(run.full_name).split('/');
       const installationId = Number(run.installation_id);
+      const adapter = await this.getAdapter();
 
       return run.github_pr_number
-        ? this.adapter.getPullRequestDiff({ installationId, owner, repo, pullNumber: run.github_pr_number })
-        : this.adapter.getCommitDiff({ installationId, owner, repo, commitSha: run.commit_sha });
+        ? adapter.getPullRequestDiff({ installationId, owner, repo, pullNumber: run.github_pr_number })
+        : adapter.getCommitDiff({ installationId, owner, repo, commitSha: run.commit_sha });
     });
   }
 
@@ -537,6 +410,22 @@ export class DashboardService {
     });
   }
 
+  async listConnectedAccounts(orgId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT gi.id, gi.installation_id, gi.account_login, gi.status, gi.created_at,
+                count(r.id) AS repository_count
+         FROM github_installations gi
+         LEFT JOIN repositories r ON r.github_installation_id = gi.id
+         WHERE gi.organization_id = $1
+         GROUP BY gi.id
+         ORDER BY gi.created_at`,
+        [orgId],
+      );
+      return rows;
+    });
+  }
+
   async getOverview(orgId: string) {
     return withTenant(orgId, async (client) => {
       const { rows: repositories } = await client.query(
@@ -547,9 +436,7 @@ export class DashboardService {
                 rr.gate_decision, rr.risk_level, rr.quality_score, rr.started_at
          FROM review_runs rr
          JOIN repositories r ON r.id = rr.repository_id
-         LEFT JOIN promotions p ON p.review_run_id = rr.id
-         WHERE rr.trigger = 'push' AND rr.status = 'completed'
-           AND p.id IS NULL AND rr.notified_at IS NULL
+         WHERE rr.trigger = 'push' AND rr.status = 'completed' AND rr.reviewed_at IS NULL
          ORDER BY rr.started_at DESC
          LIMIT 30`,
       );

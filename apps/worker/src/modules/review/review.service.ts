@@ -1,13 +1,13 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { withTenant } from '@devsentinel/database';
-import type { GitProviderPort } from '@devsentinel/git-providers';
-import type { LlmPort, ProjectProfile, ReviewResult } from '@devsentinel/llm-port';
+import { Injectable } from '@nestjs/common';
+import { getPool, withTenant } from '@devsentinel/database';
+import { GithubAdapter, type GitProviderPort } from '@devsentinel/git-providers';
+import { OpenAiCompatibleLlmAdapter, embedLocally, type ProjectProfile, type ReviewResult } from '@devsentinel/llm-port';
+import { getSystemSettings } from '@devsentinel/settings';
 import type { ReviewJobPayload } from '@devsentinel/event-contracts';
 import { buildPullRequestContent } from '@devsentinel/pr-content';
 import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
 import { RagContextService } from './ragContext.service';
-import { GIT_PROVIDER_PORT, LLM_PORT } from './tokens';
 
 interface QualityGateConfig {
   min_coverage_pct: number;
@@ -30,23 +30,43 @@ const HARD_BLOCK_CATEGORIES = new Set(['security', 'architecture', 'database', '
 @Injectable()
 export class ReviewService {
   constructor(
-    @Inject(GIT_PROVIDER_PORT) private readonly gitAdapter: GitProviderPort,
-    @Inject(LLM_PORT) private readonly llm: LlmPort,
     private readonly checkout: RepoCheckoutService,
     private readonly staticAnalysis: StaticAnalysisService,
     private readonly ragContext: RagContextService,
   ) {}
 
+  /** Construye el adapter de GitHub y el cliente LLM con la configuración vigente en
+   * `system_settings` — se hace por job (no en el constructor) para que un cambio de
+   * proveedor LLM o de credenciales de GitHub aplique al siguiente push sin reiniciar
+   * el worker. */
+  private async buildClients(): Promise<{ gitAdapter: GitProviderPort; llm: OpenAiCompatibleLlmAdapter }> {
+    const settings = await getSystemSettings(getPool());
+    const gitAdapter = new GithubAdapter({
+      appId: settings?.githubAppId ?? '',
+      privateKey: (settings?.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
+      webhookSecret: settings?.githubAppWebhookSecret ?? '',
+    });
+    const llm = new OpenAiCompatibleLlmAdapter(
+      settings?.llmModel ?? '',
+      settings?.llmProviderBaseUrl ?? '',
+      settings?.llmProviderApiKey ?? '',
+      embedLocally,
+    );
+    return { gitAdapter, llm };
+  }
+
   async runReview(payload: ReviewJobPayload): Promise<void> {
     try {
+      const { gitAdapter, llm } = await this.buildClients();
+
       const diff = payload.pullNumber
-        ? await this.gitAdapter.getPullRequestDiff({
+        ? await gitAdapter.getPullRequestDiff({
             installationId: payload.installationId,
             owner: payload.owner,
             repo: payload.repo,
             pullNumber: payload.pullNumber,
           })
-        : await this.gitAdapter.getCommitDiff({
+        : await gitAdapter.getCommitDiff({
             installationId: payload.installationId,
             owner: payload.owner,
             repo: payload.repo,
@@ -55,7 +75,7 @@ export class ReviewService {
 
       const analyzedFiles = extractAnalyzedFiles(diff);
 
-      const installationToken = await this.gitAdapter.getInstallationToken(payload.installationId);
+      const installationToken = await gitAdapter.getInstallationToken(payload.installationId);
 
       const { staticFindings, retrievedContext } = await this.checkout.withCheckout(
         {
@@ -78,7 +98,7 @@ export class ReviewService {
 
       const [projectProfile, recentCommits] = await Promise.all([
         this.getProjectProfile(payload.organizationId, payload.repositoryId),
-        this.gitAdapter.getRecentCommits({
+        gitAdapter.getRecentCommits({
           installationId: payload.installationId,
           owner: payload.owner,
           repo: payload.repo,
@@ -86,7 +106,7 @@ export class ReviewService {
         }),
       ]);
 
-      const result = await this.llm.reviewDiff({
+      const result = await llm.reviewDiff({
         repositoryFullName: `${payload.owner}/${payload.repo}`,
         commitSha: payload.commitSha,
         diff,
@@ -101,8 +121,8 @@ export class ReviewService {
       const gateDecision = this.evaluateGateDecision(config, result);
 
       await this.persistResult(payload, result, gateDecision, analyzedFiles);
-      await this.publishToGithub(payload, result, gateDecision);
-      await this.maybeAutoCreatePullRequest(payload, result, gateDecision);
+      await this.publishToGithub(gitAdapter, payload, result, gateDecision);
+      await this.maybeAutoCreatePullRequest(gitAdapter, payload, result, gateDecision);
     } catch (err) {
       await this.markFailed(payload, (err as Error).message);
       throw err;
@@ -187,11 +207,16 @@ export class ReviewService {
     });
   }
 
-  private async publishToGithub(payload: ReviewJobPayload, result: ReviewResult, gateDecision: GateDecision): Promise<void> {
+  private async publishToGithub(
+    gitAdapter: GitProviderPort,
+    payload: ReviewJobPayload,
+    result: ReviewResult,
+    gateDecision: GateDecision,
+  ): Promise<void> {
     if (payload.pullNumber) {
       for (const finding of result.findings) {
         if (!finding.line_start) continue;
-        await this.gitAdapter.postReviewComment({
+        await gitAdapter.postReviewComment({
           installationId: payload.installationId,
           owner: payload.owner,
           repo: payload.repo,
@@ -203,7 +228,7 @@ export class ReviewService {
         });
       }
 
-      await this.gitAdapter.postSummaryComment({
+      await gitAdapter.postSummaryComment({
         installationId: payload.installationId,
         owner: payload.owner,
         repo: payload.repo,
@@ -228,7 +253,7 @@ export class ReviewService {
           ? 'Requiere revisión humana — DevSentinel AI'
           : 'Bloqueado por DevSentinel AI';
 
-    await this.gitAdapter.setCheckRunStatus({
+    await gitAdapter.setCheckRunStatus({
       installationId: payload.installationId,
       owner: payload.owner,
       repo: payload.repo,
@@ -244,6 +269,7 @@ export class ReviewService {
    * propia IA marcó NO APTO. Sin el flag, la creación queda solo para el botón manual
    * (PullRequestsService en apps/api). */
   private async maybeAutoCreatePullRequest(
+    gitAdapter: GitProviderPort,
     payload: ReviewJobPayload,
     result: ReviewResult,
     gateDecision: GateDecision,
@@ -253,7 +279,7 @@ export class ReviewService {
     const config = await this.getPrAutoCreateConfig(payload.organizationId, payload.repositoryId);
     if (!config.auto_create_pr_on_push || payload.branch !== config.promotion_source_branch) return;
 
-    const existing = await this.gitAdapter.findOpenPullRequest({
+    const existing = await gitAdapter.findOpenPullRequest({
       installationId: payload.installationId,
       owner: payload.owner,
       repo: payload.repo,
@@ -280,7 +306,7 @@ export class ReviewService {
       })),
     });
 
-    const created = await this.gitAdapter.createPullRequest({
+    const created = await gitAdapter.createPullRequest({
       installationId: payload.installationId,
       owner: payload.owner,
       repo: payload.repo,
@@ -311,7 +337,7 @@ export class ReviewService {
 
     for (const finding of result.findings) {
       if (!finding.line_start) continue;
-      await this.gitAdapter.postReviewComment({
+      await gitAdapter.postReviewComment({
         installationId: payload.installationId,
         owner: payload.owner,
         repo: payload.repo,

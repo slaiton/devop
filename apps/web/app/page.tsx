@@ -19,10 +19,26 @@ async function fetchRepositories(): Promise<Repository[]> {
   return res.json();
 }
 
+async function fetchSetupStatus(): Promise<{ configured: boolean }> {
+  const res = await fetch(`${process.env.API_INTERNAL_URL}/api/system-settings/status`, { cache: 'no-store' });
+  if (!res.ok) return { configured: true }; // ante la duda, no invitar a re-configurar
+  return res.json();
+}
+
 export default async function HomePage() {
   const session = await getSession();
 
   if (!session) {
+    const { configured } = await fetchSetupStatus();
+    if (!configured) {
+      return (
+        <main>
+          <h1>DevSentinel AI</h1>
+          <p>Todavía no se ha configurado la GitHub App de este despliegue.</p>
+          <a href="/setup">Configurar DevSentinel AI</a>
+        </main>
+      );
+    }
     return (
       <main>
         <h1>DevSentinel AI</h1>
@@ -42,7 +58,8 @@ export default async function HomePage() {
     <main>
       <p>
         <a href="/overview">Ver pendientes</a> · <a href="/developers">Developers</a> ·{' '}
-        <a href="/team">Equipo</a> · <a href="/me">Mi perfil</a>
+        <a href="/team">Equipo</a> · <a href="/accounts">Cuentas de GitHub</a> ·{' '}
+        <a href="/settings">Configuración del sistema</a> · <a href="/me">Mi perfil</a>
       </p>
       <h1>Repositorios</h1>
       {repositories.length === 0 ? (

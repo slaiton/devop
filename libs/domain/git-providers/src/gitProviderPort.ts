@@ -103,6 +103,7 @@ export interface GitProviderPort {
   mergePullRequest(params: PullRequestRef): Promise<{ merged: boolean }>;
   mergeBranch(params: MergeBranchParams): Promise<{ merged: boolean; conflict: boolean }>;
   getRecentCommits(params: CommitRef, count?: number): Promise<RecentCommitInfo[]>;
+  getInstallationAccountLogin(installationId: number): Promise<string>;
   findOpenPullRequest(params: FindOpenPullRequestParams): Promise<{ number: number } | null>;
   createPullRequest(params: CreatePullRequestParams): Promise<CreatedPullRequest>;
   getPullRequestStatus(params: PullRequestRef): Promise<PullRequestStatus>;

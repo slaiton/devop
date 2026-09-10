@@ -1,7 +1,8 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
-import { withTenant } from '@devsentinel/database';
+import { getPool, withTenant } from '@devsentinel/database';
 import { GithubAdapter } from '@devsentinel/git-providers';
+import { getSystemSettings } from '@devsentinel/settings';
 import { buildPullRequestContent } from '@devsentinel/pr-content';
 
 interface Actor {
@@ -11,17 +12,17 @@ interface Actor {
 
 @Injectable()
 export class PullRequestsService {
-  private readonly adapter: GithubAdapter;
-
-  constructor() {
-    this.adapter = new GithubAdapter({
-      appId: process.env.GITHUB_APP_ID ?? '',
-      privateKey: (process.env.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
-      webhookSecret: process.env.GITHUB_APP_WEBHOOK_SECRET ?? '',
+  private async getAdapter(): Promise<GithubAdapter> {
+    const settings = await getSystemSettings(getPool());
+    return new GithubAdapter({
+      appId: settings?.githubAppId ?? '',
+      privateKey: (settings?.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
+      webhookSecret: settings?.githubAppWebhookSecret ?? '',
     });
   }
 
   async createFromPush(orgId: string, repositoryId: string, reviewRunId: string) {
+    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `SELECT rr.commit_sha, rr.branch, rr.trigger, rr.status, rr.gate_decision, rr.quality_score,
@@ -59,7 +60,7 @@ export class PullRequestsService {
         findings: findingRows,
       });
 
-      const existing = await this.adapter.findOpenPullRequest({ installationId, owner, repo, head: run.branch, base });
+      const existing = await adapter.findOpenPullRequest({ installationId, owner, repo, head: run.branch, base });
 
       let prNumber: number;
       let authorLogin: string;
@@ -69,7 +70,7 @@ export class PullRequestsService {
         prNumber = existing.number;
         authorLogin = 'unknown';
       } else {
-        const created = await this.adapter.createPullRequest({ installationId, owner, repo, head: run.branch, base, title, body });
+        const created = await adapter.createPullRequest({ installationId, owner, repo, head: run.branch, base, title, body });
         prNumber = created.number;
         authorLogin = created.authorLogin;
       }
@@ -87,7 +88,7 @@ export class PullRequestsService {
       if (!skipComments) {
         for (const finding of findingRows) {
           if (!finding.line_start) continue;
-          await this.adapter.postReviewComment({
+          await adapter.postReviewComment({
             installationId,
             owner,
             repo,
@@ -107,11 +108,22 @@ export class PullRequestsService {
   async listForRepository(orgId: string, repositoryId: string, actor: Actor) {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `SELECT pr.*, ${this.ownerUserIdSelect()}
+        `SELECT pr.*,
+                COALESCE(source_rr.quality_score, native_rr.quality_score) AS quality_score,
+                COALESCE(source_rr.risk_level, native_rr.risk_level) AS risk_level,
+                COALESCE(source_rr.gate_decision, native_rr.gate_decision) AS gate_decision,
+                ${this.ownerUserIdSelect()}
          FROM pull_requests pr
-         LEFT JOIN review_runs rr ON rr.id = pr.source_review_run_id
-         LEFT JOIN developers rr_dev ON rr_dev.id = rr.developer_id
+         LEFT JOIN review_runs source_rr ON source_rr.id = pr.source_review_run_id
+         LEFT JOIN developers rr_dev ON rr_dev.id = source_rr.developer_id
          LEFT JOIN developers login_dev ON login_dev.organization_id = pr.organization_id AND login_dev.github_login = pr.author_login
+         LEFT JOIN LATERAL (
+           SELECT quality_score, risk_level, gate_decision
+           FROM review_runs
+           WHERE review_runs.pull_request_id = pr.id
+           ORDER BY started_at DESC
+           LIMIT 1
+         ) native_rr ON true
          WHERE pr.repository_id = $1
          ORDER BY pr.created_at DESC`,
         [repositoryId],
@@ -132,10 +144,11 @@ export class PullRequestsService {
   }
 
   async getStatus(orgId: string, pullRequestId: string, actor: Actor) {
+    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { installationId, owner, repo, pr } = await this.loadGithubRef(client, pullRequestId);
       this.assertCanView(pr, actor);
-      return this.adapter.getPullRequestStatus({ installationId, owner, repo, pullNumber: pr.github_pr_number });
+      return adapter.getPullRequestStatus({ installationId, owner, repo, pullNumber: pr.github_pr_number });
     });
   }
 
@@ -166,13 +179,14 @@ export class PullRequestsService {
   }
 
   async validateMerge(orgId: string, pullRequestId: string): Promise<{ canMerge: boolean; reasons: string[] }> {
+    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { installationId, owner, repo, pr } = await this.loadGithubRef(client, pullRequestId);
       const reasons: string[] = [];
 
       if (pr.status !== 'open') reasons.push(`el PR ya está ${pr.status}`);
 
-      const status = await this.adapter.getPullRequestStatus({ installationId, owner, repo, pullNumber: pr.github_pr_number });
+      const status = await adapter.getPullRequestStatus({ installationId, owner, repo, pullNumber: pr.github_pr_number });
       if (status.state !== 'open') reasons.push('el PR no está abierto en GitHub');
       if (status.draft) reasons.push('el PR sigue en borrador');
       if (status.mergeableState === 'dirty') reasons.push('hay conflictos con la rama destino');
@@ -207,9 +221,10 @@ export class PullRequestsService {
       throw new BadRequestException(`no se puede mergear: ${reasons.join('; ')}`);
     }
 
+    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { installationId, owner, repo, pr } = await this.loadGithubRef(client, pullRequestId);
-      const result = await this.adapter.mergePullRequest({ installationId, owner, repo, pullNumber: pr.github_pr_number });
+      const result = await adapter.mergePullRequest({ installationId, owner, repo, pullNumber: pr.github_pr_number });
       await client.query(`UPDATE pull_requests SET status = 'merged', merged_at = now() WHERE id = $1`, [pullRequestId]);
       return result;
     });

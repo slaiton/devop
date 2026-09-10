@@ -1,9 +1,12 @@
 import { BadRequestException, Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { randomBytes } from 'crypto';
+import { verify } from 'jsonwebtoken';
 import { getPool } from '@devsentinel/database';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
+import { RolesGuard } from '../../common/roles.guard';
+import { Roles } from '../../common/roles.decorator';
 import { CurrentOrg } from '../../common/currentOrg.decorator';
 import { CurrentUser } from '../../common/currentUser.decorator';
 
@@ -16,7 +19,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Get('login')
-  login(@Res() res: Response): void {
+  async login(@Res() res: Response): Promise<void> {
     const state = randomBytes(16).toString('hex');
     res.cookie('oauth_state', state, {
       httpOnly: true,
@@ -24,7 +27,14 @@ export class AuthController {
       secure: COOKIES_REQUIRE_HTTPS,
       maxAge: 5 * 60 * 1000,
     });
-    res.redirect(this.authService.buildAuthorizeUrl(state));
+    res.redirect(await this.authService.buildAuthorizeUrl(state));
+  }
+
+  @Get('link-account')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  async linkAccount(@CurrentOrg() orgId: string, @Res() res: Response): Promise<void> {
+    res.redirect(await this.authService.buildLinkAccountUrl(orgId));
   }
 
   @Get('callback')
@@ -32,9 +42,22 @@ export class AuthController {
     @Query('code') code: string,
     @Query('state') state: string | undefined,
     @Query('setup_action') setupAction: string | undefined,
+    @Query('installation_id') installationId: string | undefined,
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    // Camino de "conectar otra cuenta de GitHub": el admin ya está logueado y solo
+    // queremos ligar esta instalación nueva a su organización — no hay usuario que
+    // autenticar ni `code` que canjear.
+    if (state && installationId) {
+      const linkPayload = this.tryDecodeLinkToken(state);
+      if (linkPayload) {
+        await this.authService.linkInstallation(linkPayload.orgId, Number(installationId));
+        res.redirect(`${process.env.PUBLIC_WEB_ORIGIN ?? ''}/accounts`);
+        return;
+      }
+    }
+
     // GitHub omite `state` cuando el callback llega desde la pantalla de
     // instalación/actualización de la App (setup_action=install|update) en vez
     // del /login/oauth/authorize que nosotros iniciamos; ahí no hay CSRF que
@@ -65,7 +88,7 @@ export class AuthController {
     }
 
     if (!organizationId) {
-      const appSlug = process.env.GITHUB_APP_SLUG ?? '';
+      const appSlug = await this.authService.getAppSlug();
       res.redirect(`https://github.com/apps/${appSlug}/installations/new`);
       return;
     }
@@ -99,5 +122,17 @@ export class AuthController {
       avatarUrl: user?.avatar_url ?? null,
       email: user?.email ?? null,
     };
+  }
+
+  private tryDecodeLinkToken(state: string): { orgId: string } | null {
+    try {
+      const payload = verify(state, process.env.JWT_SECRET ?? '') as any;
+      if (payload?.purpose === 'link-installation' && payload?.orgId) {
+        return { orgId: payload.orgId };
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 }

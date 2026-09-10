@@ -1,27 +1,12 @@
 import { cookies } from 'next/headers';
 import Link from 'next/link';
-import { MergeButton } from './MergeButton';
-import { RequestPromotionButton, PromotionDecisionButtons } from './PromotionActions';
 import { RepoSettingsForm } from './RepoSettingsForm';
 import { NotifyButton } from './NotifyButton';
 import { ProjectProfileForm } from './ProjectProfileForm';
 import { CreatePullRequestButton, MergePullRequestButton } from './PullRequestActions';
+import { MarkReviewedButton } from './MarkReviewedButton';
 import { GateBadge } from '../../GateBadge';
 import { getSession } from '../../session';
-
-interface PullRequestRow {
-  id: string;
-  github_pr_number: number;
-  title: string;
-  status: 'open' | 'merged' | 'closed';
-  author_login: string;
-  source_branch: string;
-  target_branch: string;
-  review_run_id: string | null;
-  quality_score: number | null;
-  risk_level: 'low' | 'medium' | 'high' | null;
-  review_status: string | null;
-}
 
 interface PushRow {
   id: string;
@@ -32,23 +17,11 @@ interface PushRow {
   risk_level: 'low' | 'medium' | 'high' | null;
   gate_decision: 'apto' | 'requiere_revision' | 'no_apto' | null;
   blocking_count: number;
-  promotion_id: string | null;
-  promotion_status: string | null;
   author_name: string | null;
   author_email: string | null;
   notified_at: string | null;
+  reviewed_at: string | null;
   started_at: string;
-}
-
-interface PromotionRow {
-  id: string;
-  source_branch: string;
-  target_branch: string;
-  commit_sha: string;
-  status: 'pending' | 'approved' | 'rejected';
-  notes: string | null;
-  requested_at: string;
-  decided_at: string | null;
 }
 
 interface RepoSettings {
@@ -58,15 +31,19 @@ interface RepoSettings {
   auto_create_pr_on_push: boolean;
 }
 
-interface DevSentinelPrRow {
+interface PullRequestRow {
   id: string;
   github_pr_number: number;
   title: string;
+  author_login: string;
   source_branch: string;
   target_branch: string;
   status: 'open' | 'merged' | 'closed';
   created_by: 'github' | 'devsentinel';
   source_review_run_id: string | null;
+  quality_score: number | null;
+  risk_level: 'low' | 'medium' | 'high' | null;
+  gate_decision: 'apto' | 'requiere_revision' | 'no_apto' | null;
 }
 
 interface ProjectProfileRow {
@@ -106,18 +83,14 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
   }
 
   const { id } = await params;
-  const [pullRequests, pushes, promotions, settings, projectProfile, devPullRequests] = await Promise.all([
-    fetchJson<PullRequestRow[]>(`/dashboard/repositories/${id}/pull-requests`),
+  const [pushes, settings, projectProfile, pullRequests] = await Promise.all([
     fetchJson<PushRow[]>(`/dashboard/repositories/${id}/pushes`),
-    fetchJson<PromotionRow[]>(`/dashboard/repositories/${id}/promotions`),
     fetchJson<RepoSettings>(`/dashboard/repositories/${id}/settings`),
     fetchJson<ProjectProfileRow>(`/dashboard/repositories/${id}/project-profile`),
-    fetchJson<DevSentinelPrRow[]>(`/pull-requests/repository/${id}`),
+    fetchJson<PullRequestRow[]>(`/pull-requests/repository/${id}`),
   ]);
 
-  const reviewRunsWithPr = new Set(devPullRequests.map((pr) => pr.source_review_run_id).filter(Boolean));
-
-  const pendingPromotions = promotions.filter((p) => p.status === 'pending');
+  const reviewRunsWithPr = new Set(pullRequests.map((pr) => pr.source_review_run_id).filter(Boolean));
 
   return (
     <main>
@@ -126,99 +99,36 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
       </p>
 
       <h1>Pull requests</h1>
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Título</th>
-            <th>Autor</th>
-            <th>Rama</th>
-            <th>Score</th>
-            <th>Riesgo</th>
-            <th>Estado</th>
-            <th>Acciones</th>
-          </tr>
-        </thead>
-        <tbody>
-          {pullRequests.map((pr) => (
-            <tr key={pr.id}>
-              <td>{pr.github_pr_number}</td>
-              <td>{pr.review_run_id ? <Link href={`/review-runs/${pr.review_run_id}`}>{pr.title}</Link> : pr.title}</td>
-              <td>{pr.author_login}</td>
-              <td>{pr.source_branch} → {pr.target_branch}</td>
-              <td>{pr.quality_score ?? '-'}</td>
-              <td>{pr.risk_level ? <span className={`badge badge-${pr.risk_level}`}>{pr.risk_level}</span> : '-'}</td>
-              <td>{pr.status === 'open' ? (pr.review_status ?? 'pendiente') : pr.status}</td>
-              <td>
-                {pr.status === 'open' && (
-                  <MergeButton
-                    repositoryId={id}
-                    pullRequestId={pr.id}
-                    prNumber={pr.github_pr_number}
-                    riskLevel={pr.risk_level}
-                  />
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <h1>Promociones pendientes</h1>
-      {pendingPromotions.length === 0 ? (
-        <p>No hay promociones pendientes de aprobación.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Commit</th>
-              <th>Rama</th>
-              <th>Solicitada</th>
-              <th>Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pendingPromotions.map((p) => (
-              <tr key={p.id}>
-                <td>{p.commit_sha.slice(0, 7)}</td>
-                <td>{p.source_branch} → {p.target_branch}</td>
-                <td>{new Date(p.requested_at).toLocaleString()}</td>
-                <td>
-                  <PromotionDecisionButtons
-                    promotionId={p.id}
-                    sourceBranch={p.source_branch}
-                    targetBranch={p.target_branch}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <h1>Pull Requests de DevSentinel</h1>
-      {devPullRequests.length === 0 ? (
-        <p>Todavía no se ha creado ningún Pull Request desde un push analizado.</p>
+      {pullRequests.length === 0 ? (
+        <p>Todavía no hay Pull Requests para este repositorio.</p>
       ) : (
         <table>
           <thead>
             <tr>
               <th>#</th>
               <th>Título</th>
+              <th>Autor</th>
               <th>Rama</th>
               <th>Origen</th>
+              <th>Score</th>
+              <th>Riesgo</th>
               <th>Estado</th>
               <th>Acciones</th>
             </tr>
           </thead>
           <tbody>
-            {devPullRequests.map((pr) => (
+            {pullRequests.map((pr) => (
               <tr key={pr.id}>
                 <td>{pr.github_pr_number}</td>
-                <td>{pr.source_review_run_id ? <Link href={`/review-runs/${pr.source_review_run_id}`}>{pr.title}</Link> : pr.title}</td>
+                <td>
+                  {pr.source_review_run_id ? <Link href={`/review-runs/${pr.source_review_run_id}`}>{pr.title}</Link> : pr.title}
+                </td>
+                <td>{pr.author_login}</td>
                 <td>{pr.source_branch} → {pr.target_branch}</td>
                 <td>{pr.created_by === 'devsentinel' ? 'DevSentinel' : 'GitHub'}</td>
-                <td>{pr.status}</td>
+                <td>{pr.quality_score ?? '-'}</td>
+                <td>{pr.risk_level ? <span className={`badge badge-${pr.risk_level}`}>{pr.risk_level}</span> : '-'}</td>
+                <td>{pr.status === 'open' ? <GateBadge decision={pr.gate_decision} /> : pr.status}</td>
                 <td>{pr.status === 'open' && <MergePullRequestButton pullRequestId={pr.id} />}</td>
               </tr>
             ))}
@@ -231,57 +141,42 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
         <p>Todavía no hay pushes analizados en las ramas monitoreadas.</p>
       ) : (
         <div>
-          {pushes.map((run) => {
-            const canPromote =
-              run.status === 'completed' &&
-              run.gate_decision === 'apto' &&
-              run.branch === settings.promotion_source_branch &&
-              !run.promotion_id;
-
-            return (
-              <div key={run.id} className="card">
-                <p>
-                  <strong>{run.branch ?? '-'}</strong> — commit{' '}
-                  <Link href={`/review-runs/${run.id}`}>{run.commit_sha.slice(0, 7)}</Link> —{' '}
-                  {new Date(run.started_at).toLocaleString()}
-                </p>
-                <p>
-                  {run.status !== 'completed' ? (
-                    <span>Estado: {run.status}</span>
-                  ) : (
-                    <>
-                      <GateBadge decision={run.gate_decision} />
-                      {run.gate_decision === 'no_apto' && ` — ${run.blocking_count} hallazgo(s) bloqueante(s)`}
-                    </>
-                  )}
-                  {' — '}
-                  Score: {run.quality_score ?? '-'} — Riesgo:{' '}
-                  {run.risk_level ? <span className={`badge badge-${run.risk_level}`}>{run.risk_level}</span> : '-'}
-                </p>
-                {run.promotion_id && (
-                  <p>
-                    Promoción: <span className={`badge badge-${run.promotion_status}`}>{run.promotion_status}</span>
-                  </p>
+          {pushes.map((run) => (
+            <div key={run.id} className="card">
+              <p>
+                <strong>{run.branch ?? '-'}</strong> — commit{' '}
+                <Link href={`/review-runs/${run.id}`}>{run.commit_sha.slice(0, 7)}</Link> —{' '}
+                {new Date(run.started_at).toLocaleString()}
+              </p>
+              <p>
+                {run.status !== 'completed' ? (
+                  <span>Estado: {run.status}</span>
+                ) : (
+                  <>
+                    <GateBadge decision={run.gate_decision} />
+                    {run.gate_decision === 'no_apto' && ` — ${run.blocking_count} hallazgo(s) bloqueante(s)`}
+                  </>
                 )}
-                {run.notified_at && <p>✉️ Notificado el {new Date(run.notified_at).toLocaleString()}</p>}
+                {' — '}
+                Score: {run.quality_score ?? '-'} — Riesgo:{' '}
+                {run.risk_level ? <span className={`badge badge-${run.risk_level}`}>{run.risk_level}</span> : '-'}
+              </p>
+              {run.notified_at && <p>✉️ Notificado el {new Date(run.notified_at).toLocaleString()}</p>}
+              {run.reviewed_at ? (
+                <p className="status-ok">✓ Revisado el {new Date(run.reviewed_at).toLocaleString()}</p>
+              ) : (
                 <div className="card-row">
                   {run.author_email && !run.notified_at && (
                     <NotifyButton repositoryId={id} reviewRunId={run.id} authorEmail={run.author_email} />
                   )}
-                  {canPromote && (
-                    <RequestPromotionButton
-                      repositoryId={id}
-                      reviewRunId={run.id}
-                      targetBranch={settings.promotion_target_branch}
-                    />
-                  )}
                   {run.gate_decision === 'apto' && !reviewRunsWithPr.has(run.id) && (
                     <CreatePullRequestButton repositoryId={id} reviewRunId={run.id} />
                   )}
+                  <MarkReviewedButton repositoryId={id} reviewRunId={run.id} />
                 </div>
-              </div>
-            );
-          })}
+              )}
+            </div>
+          ))}
         </div>
       )}
 

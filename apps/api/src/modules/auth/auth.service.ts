@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { sign } from 'jsonwebtoken';
 import { getPool, withTenant } from '@devsentinel/database';
+import { getSystemSettings } from '@devsentinel/settings';
+import { GithubAdapter } from '@devsentinel/git-providers';
 
 interface GithubTokenResponse {
   access_token?: string;
@@ -18,22 +20,57 @@ export interface GithubUser {
 
 @Injectable()
 export class AuthService {
-  buildAuthorizeUrl(state: string): string {
+  async buildAuthorizeUrl(state: string): Promise<string> {
+    const settings = await getSystemSettings(getPool());
     const params = new URLSearchParams({
-      client_id: process.env.GITHUB_APP_CLIENT_ID ?? '',
+      client_id: settings?.githubAppClientId ?? '',
       redirect_uri: process.env.GITHUB_OAUTH_CALLBACK_URL ?? '',
       state,
     });
     return `https://github.com/login/oauth/authorize?${params.toString()}`;
   }
 
+  async getAppSlug(): Promise<string> {
+    const settings = await getSystemSettings(getPool());
+    return settings?.githubAppSlug ?? '';
+  }
+
+  /** Genera la URL para instalar la App en otra cuenta de GitHub, ligando esa
+   * instalación a `organizationId` cuando el callback la reciba de vuelta. */
+  async buildLinkAccountUrl(organizationId: string): Promise<string> {
+    const settings = await getSystemSettings(getPool());
+    const slug = settings?.githubAppSlug ?? '';
+    const state = sign({ purpose: 'link-installation', orgId: organizationId }, process.env.JWT_SECRET ?? '', {
+      expiresIn: '10m',
+    });
+    return `https://github.com/apps/${slug}/installations/new?state=${encodeURIComponent(state)}`;
+  }
+
+  /** Re-parenta una instalación (y sus repos ya sincronizados) a la organización
+   * indicada — usado por el callback cuando `state` es un token de link válido. */
+  async linkInstallation(organizationId: string, installationId: number): Promise<void> {
+    const settings = await getSystemSettings(getPool());
+    const adapter = new GithubAdapter({
+      appId: settings?.githubAppId ?? '',
+      privateKey: (settings?.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
+      webhookSecret: settings?.githubAppWebhookSecret ?? '',
+    });
+    const accountLogin = await adapter.getInstallationAccountLogin(installationId);
+    await getPool().query('SELECT link_installation_to_organization($1, $2, $3)', [
+      installationId,
+      organizationId,
+      accountLogin,
+    ]);
+  }
+
   async exchangeCodeForUser(code: string): Promise<GithubUser> {
+    const settings = await getSystemSettings(getPool());
     const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
-        client_id: process.env.GITHUB_APP_CLIENT_ID,
-        client_secret: process.env.GITHUB_APP_CLIENT_SECRET,
+        client_id: settings?.githubAppClientId,
+        client_secret: settings?.githubAppClientSecret,
         code,
       }),
     });

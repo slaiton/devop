@@ -3,30 +3,17 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-export function MergeButton({
-  repositoryId,
-  pullRequestId,
-  prNumber,
-  riskLevel,
-}: {
-  repositoryId: string;
-  pullRequestId: string;
-  prNumber: number;
-  riskLevel: 'low' | 'medium' | 'high' | null;
-}) {
+export function MarkReviewedButton({ repositoryId, reviewRunId }: { repositoryId: string; reviewRunId: string }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleMerge() {
-    const warning = riskLevel === 'high' ? '\n\nAdvertencia: la auditoría marcó este PR con riesgo ALTO.' : '';
-    if (!window.confirm(`¿Confirmas hacer merge del PR #${prNumber}?${warning}`)) return;
-
+  async function handleClick() {
     setLoading(true);
     setError(null);
     try {
       const res = await fetch(
-        `/api/dashboard/repositories/${repositoryId}/pull-requests/${pullRequestId}/merge`,
+        `/api/dashboard/repositories/${repositoryId}/review-runs/${reviewRunId}/mark-reviewed`,
         { method: 'POST' },
       );
       if (!res.ok) {
@@ -43,8 +30,8 @@ export function MergeButton({
 
   return (
     <div>
-      <button onClick={handleMerge} disabled={loading}>
-        {loading ? 'Mergeando…' : 'Merge'}
+      <button onClick={handleClick} disabled={loading}>
+        {loading ? 'Marcando…' : 'Marcar como revisado'}
       </button>
       {error && <p className="error-text">{error}</p>}
     </div>

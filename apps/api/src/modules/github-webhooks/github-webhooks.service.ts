@@ -3,22 +3,22 @@ import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { GithubAdapter } from '@devsentinel/git-providers';
 import { getPool, withTenant } from '@devsentinel/database';
+import { getSystemSettings } from '@devsentinel/settings';
 import { REVIEW_QUEUE_NAME, type ReviewJobPayload } from '@devsentinel/event-contracts';
 
 @Injectable()
 export class GithubWebhooksService {
-  private readonly adapter: GithubAdapter;
+  constructor(@InjectQueue(REVIEW_QUEUE_NAME) private readonly queue: Queue<ReviewJobPayload>) {}
 
-  constructor(@InjectQueue(REVIEW_QUEUE_NAME) private readonly queue: Queue<ReviewJobPayload>) {
-    this.adapter = new GithubAdapter({
-      appId: process.env.GITHUB_APP_ID ?? '',
-      privateKey: (process.env.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
-      webhookSecret: process.env.GITHUB_APP_WEBHOOK_SECRET ?? '',
+  async verifySignature(rawBody: Buffer, signature: string | undefined): Promise<boolean> {
+    const settings = await getSystemSettings(getPool());
+    if (!settings?.githubAppWebhookSecret) return false;
+    const adapter = new GithubAdapter({
+      appId: settings.githubAppId ?? '',
+      privateKey: (settings.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
+      webhookSecret: settings.githubAppWebhookSecret,
     });
-  }
-
-  verifySignature(rawBody: Buffer, signature: string | undefined): boolean {
-    return this.adapter.verifyWebhookSignature(rawBody, signature);
+    return adapter.verifyWebhookSignature(rawBody, signature);
   }
 
   async handleEvent(event: string, payload: any): Promise<void> {

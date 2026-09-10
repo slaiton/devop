@@ -136,60 +136,21 @@ export class DashboardController {
     return this.dashboardService.notifyReviewRun(orgId, repositoryId, reviewRunId);
   }
 
-  @Get('repositories/:repositoryId/pull-requests')
-  @Roles('admin')
-  listPullRequests(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
-    return this.dashboardService.listPullRequests(orgId, repositoryId);
-  }
-
   @Get('repositories/:repositoryId/pushes')
   @Roles('admin')
   listPushes(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
     return this.dashboardService.listPushes(orgId, repositoryId);
   }
 
-  @Post('repositories/:repositoryId/pull-requests/:pullRequestId/merge')
+  @Post('repositories/:repositoryId/review-runs/:reviewRunId/mark-reviewed')
   @Roles('admin')
-  mergePullRequest(
-    @CurrentOrg() orgId: string,
-    @Param('repositoryId') repositoryId: string,
-    @Param('pullRequestId') pullRequestId: string,
-  ) {
-    return this.dashboardService.mergePullRequest(orgId, repositoryId, pullRequestId);
-  }
-
-  @Get('repositories/:repositoryId/promotions')
-  @Roles('admin')
-  listPromotions(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
-    return this.dashboardService.listPromotions(orgId, repositoryId);
-  }
-
-  @Post('repositories/:repositoryId/promotions')
-  @Roles('admin')
-  requestPromotion(
+  markReviewed(
     @CurrentOrg() orgId: string,
     @CurrentUser() userId: string,
     @Param('repositoryId') repositoryId: string,
-    @Body() body: { reviewRunId: string },
+    @Param('reviewRunId') reviewRunId: string,
   ) {
-    return this.dashboardService.requestPromotion(orgId, repositoryId, body.reviewRunId, userId);
-  }
-
-  @Post('promotions/:promotionId/approve')
-  @Roles('admin')
-  approvePromotion(@CurrentOrg() orgId: string, @CurrentUser() userId: string, @Param('promotionId') promotionId: string) {
-    return this.dashboardService.decidePromotion(orgId, promotionId, userId, 'approved');
-  }
-
-  @Post('promotions/:promotionId/reject')
-  @Roles('admin')
-  rejectPromotion(
-    @CurrentOrg() orgId: string,
-    @CurrentUser() userId: string,
-    @Param('promotionId') promotionId: string,
-    @Body() body: { notes?: string },
-  ) {
-    return this.dashboardService.decidePromotion(orgId, promotionId, userId, 'rejected', body?.notes);
+    return this.dashboardService.markReviewed(orgId, repositoryId, reviewRunId, userId);
   }
 
   @Get('developers')
@@ -202,5 +163,11 @@ export class DashboardController {
   @Roles('admin')
   getOverview(@CurrentOrg() orgId: string) {
     return this.dashboardService.getOverview(orgId);
+  }
+
+  @Get('accounts')
+  @Roles('admin')
+  listConnectedAccounts(@CurrentOrg() orgId: string) {
+    return this.dashboardService.listConnectedAccounts(orgId);
   }
 }

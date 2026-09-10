@@ -197,6 +197,19 @@ export class GithubAdapter implements GitProviderPort {
     };
   }
 
+  /** Resuelve el account_login dueño de una instalación a partir de su id — cliente
+   * autenticado como App (JWT), no como instalación, ya que no conocemos de antemano
+   * ningún dato de esa instalación más que su id. */
+  async getInstallationAccountLogin(installationId: number): Promise<string> {
+    const client = new Octokit({
+      authStrategy: createAppAuth,
+      auth: { appId: this.config.appId, privateKey: this.config.privateKey },
+    });
+    const { data } = await client.apps.getInstallation({ installation_id: installationId });
+    const account = data.account as { login?: string; slug?: string } | null;
+    return account?.login ?? account?.slug ?? 'unknown';
+  }
+
   private getInstallationClient(installationId: number): Octokit {
     return new Octokit({
       authStrategy: createAppAuth,

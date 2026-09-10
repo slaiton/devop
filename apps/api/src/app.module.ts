@@ -4,6 +4,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { GithubWebhooksModule } from './modules/github-webhooks/github-webhooks.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PullRequestsModule } from './modules/pull-requests/pull-requests.module';
+import { SystemSettingsModule } from './modules/system-settings/system-settings.module';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
@@ -15,6 +16,7 @@ import { HealthModule } from './modules/health/health.module';
     GithubWebhooksModule,
     DashboardModule,
     PullRequestsModule,
+    SystemSettingsModule,
     HealthModule,
   ],
 })

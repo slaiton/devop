@@ -14,7 +14,7 @@ export class GithubWebhooksController {
     @Headers('x-github-event') event: string | undefined,
     @Body() body: Record<string, unknown>,
   ): Promise<{ received: true }> {
-    if (!req.rawBody || !this.service.verifySignature(req.rawBody, signature)) {
+    if (!req.rawBody || !(await this.service.verifySignature(req.rawBody, signature))) {
       throw new UnauthorizedException('invalid webhook signature');
     }
     await this.service.handleEvent(event ?? 'unknown', body);
