@@ -94,7 +94,7 @@ export class GithubWebhooksService {
     if (!commitSha || commitSha === '0000000000000000000000000000000000000000') return;
 
     const branch = String(payload.ref ?? '').replace(/^refs\/heads\//, '');
-    if (!branch || !matchesBranchPattern(branch, repository.monitored_branches)) return;
+    if (!branch || branch === repository.default_branch) return;
 
     const authorName: string | null = payload.head_commit?.author?.name ?? null;
     const authorEmail: string | null = payload.head_commit?.author?.email ?? null;
@@ -235,12 +235,11 @@ export class GithubWebhooksService {
   private async getRepositoryForPush(
     orgId: string,
     githubRepoId: number,
-  ): Promise<{ id: string; monitored_branches: string[] } | null> {
+  ): Promise<{ id: string; default_branch: string } | null> {
     return withTenant(orgId, async (client) => {
-      const { rows } = await client.query(
-        'SELECT id, monitored_branches FROM repositories WHERE github_repo_id = $1',
-        [githubRepoId],
-      );
+      const { rows } = await client.query('SELECT id, default_branch FROM repositories WHERE github_repo_id = $1', [
+        githubRepoId,
+      ]);
       return rows[0] ?? null;
     });
   }
@@ -313,16 +312,4 @@ export class GithubWebhooksService {
       return rows[0].id as string;
     });
   }
-}
-
-/**
- * arreglo vacío = todas las ramas (compatibilidad hacia atrás); si no, exact-match o
- * patrón con sufijo "/*" (p. ej. "feature/*" matchea "feature/x").
- */
-function matchesBranchPattern(branch: string, patterns: string[]): boolean {
-  if (!patterns.length) return true;
-  return patterns.some((pattern) => {
-    if (pattern.endsWith('/*')) return branch.startsWith(pattern.slice(0, -1));
-    return branch === pattern;
-  });
 }

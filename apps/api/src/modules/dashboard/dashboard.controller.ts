@@ -9,7 +9,6 @@ import { AuthService } from '../auth/auth.service';
 import { DashboardService } from './dashboard.service';
 
 interface UpdateRepositorySettingsBody {
-  monitoredBranches?: string[];
   promotionSourceBranch?: string;
   promotionTargetBranch?: string;
   autoCreatePrOnPush?: boolean;

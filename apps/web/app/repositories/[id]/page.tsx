@@ -25,7 +25,6 @@ interface PushRow {
 }
 
 interface RepoSettings {
-  monitored_branches: string[];
   promotion_source_branch: string;
   promotion_target_branch: string;
   auto_create_pr_on_push: boolean;
@@ -208,7 +207,6 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
       <h1>Configuración</h1>
       <RepoSettingsForm
         repositoryId={id}
-        monitoredBranches={settings.monitored_branches}
         promotionSourceBranch={settings.promotion_source_branch}
         promotionTargetBranch={settings.promotion_target_branch}
         autoCreatePrOnPush={settings.auto_create_pr_on_push}

@@ -5,19 +5,16 @@ import { useRouter } from 'next/navigation';
 
 export function RepoSettingsForm({
   repositoryId,
-  monitoredBranches,
   promotionSourceBranch,
   promotionTargetBranch,
   autoCreatePrOnPush,
 }: {
   repositoryId: string;
-  monitoredBranches: string[];
   promotionSourceBranch: string;
   promotionTargetBranch: string;
   autoCreatePrOnPush: boolean;
 }) {
   const router = useRouter();
-  const [branches, setBranches] = useState(monitoredBranches.join(', '));
   const [sourceBranch, setSourceBranch] = useState(promotionSourceBranch);
   const [targetBranch, setTargetBranch] = useState(promotionTargetBranch);
   const [autoCreatePr, setAutoCreatePr] = useState(autoCreatePrOnPush);
@@ -35,10 +32,6 @@ export function RepoSettingsForm({
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          monitoredBranches: branches
-            .split(',')
-            .map((b) => b.trim())
-            .filter(Boolean),
           promotionSourceBranch: sourceBranch.trim(),
           promotionTargetBranch: targetBranch.trim(),
           autoCreatePrOnPush: autoCreatePr,
@@ -59,11 +52,8 @@ export function RepoSettingsForm({
 
   return (
     <form onSubmit={handleSubmit}>
-      <p>
-        <label>
-          Ramas monitoreadas (separadas por coma, vacío = todas):{' '}
-          <input value={branches} onChange={(e) => setBranches(e.target.value)} placeholder="staging, feature/*" />
-        </label>
+      <p style={{ color: 'var(--text-muted)' }}>
+        Se analiza cualquier push a cualquier rama del repositorio, excepto la rama principal (default).
       </p>
       <p>
         <label>

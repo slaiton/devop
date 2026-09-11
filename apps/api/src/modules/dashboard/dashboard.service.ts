@@ -33,7 +33,7 @@ export class DashboardService {
   async listRepositories(orgId: string) {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `SELECT id, full_name, default_branch, webhook_status, monitored_branches, created_at
+        `SELECT id, full_name, default_branch, webhook_status, created_at
          FROM repositories
          ORDER BY full_name`,
       );
@@ -44,8 +44,7 @@ export class DashboardService {
   async getRepositorySettings(orgId: string, repositoryId: string) {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `SELECT r.monitored_branches,
-                COALESCE(qgc.promotion_source_branch, 'staging') AS promotion_source_branch,
+        `SELECT COALESCE(qgc.promotion_source_branch, 'staging') AS promotion_source_branch,
                 COALESCE(qgc.promotion_target_branch, 'main') AS promotion_target_branch,
                 COALESCE(qgc.auto_create_pr_on_push, false) AS auto_create_pr_on_push
          FROM repositories r
@@ -63,19 +62,12 @@ export class DashboardService {
     orgId: string,
     repositoryId: string,
     settings: {
-      monitoredBranches?: string[];
       promotionSourceBranch?: string;
       promotionTargetBranch?: string;
       autoCreatePrOnPush?: boolean;
     },
   ) {
     await withTenant(orgId, async (client) => {
-      if (settings.monitoredBranches) {
-        await client.query('UPDATE repositories SET monitored_branches = $1 WHERE id = $2', [
-          settings.monitoredBranches,
-          repositoryId,
-        ]);
-      }
       if (settings.promotionSourceBranch || settings.promotionTargetBranch || settings.autoCreatePrOnPush !== undefined) {
         await client.query(
           `INSERT INTO quality_gate_configs (organization_id, repository_id, promotion_source_branch, promotion_target_branch, auto_create_pr_on_push)
