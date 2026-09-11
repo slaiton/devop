@@ -11,3 +11,14 @@ export interface ReviewJobPayload {
   branch: string;
   pullNumber?: number;
 }
+
+export const RECONSIDER_QUEUE_NAME = 'reconsider-jobs';
+
+export interface ReconsiderJobPayload {
+  findingId: string;
+  reviewRunId: string;
+  organizationId: string;
+  repositoryId: string;
+  comment: string;
+  requestedBy: string;
+}

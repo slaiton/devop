@@ -170,4 +170,24 @@ export class DashboardController {
   listConnectedAccounts(@CurrentOrg() orgId: string) {
     return this.dashboardService.listConnectedAccounts(orgId);
   }
+
+  @Post('repositories/:repositoryId/review-runs/:reviewRunId/findings/:findingId/reconsider')
+  @Roles('admin')
+  reconsiderFinding(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @Param('repositoryId') repositoryId: string,
+    @Param('reviewRunId') reviewRunId: string,
+    @Param('findingId') findingId: string,
+    @Body() body: { comment: string },
+  ) {
+    return this.dashboardService.requestFindingReconsideration(
+      orgId,
+      repositoryId,
+      reviewRunId,
+      findingId,
+      body.comment,
+      userId,
+    );
+  }
 }

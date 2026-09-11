@@ -62,6 +62,11 @@ interface ProjectProfileRow {
   compatibility_notes: string | null;
 }
 
+function isEligibleForPullRequest(run: Pick<PushRow, 'gate_decision' | 'risk_level' | 'quality_score'>): boolean {
+  if (run.gate_decision === 'no_apto') return false;
+  return run.gate_decision === 'apto' || (run.risk_level === 'medium' && (run.quality_score ?? 100) <= 70);
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
   const cookieHeader = cookies().toString();
   const res = await fetch(`${process.env.API_INTERNAL_URL}/api${path}`, {
@@ -169,7 +174,7 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
                   {run.author_email && !run.notified_at && (
                     <NotifyButton repositoryId={id} reviewRunId={run.id} authorEmail={run.author_email} />
                   )}
-                  {run.gate_decision === 'apto' && !reviewRunsWithPr.has(run.id) && (
+                  {isEligibleForPullRequest(run) && !reviewRunsWithPr.has(run.id) && (
                     <CreatePullRequestButton repositoryId={id} reviewRunId={run.id} />
                   )}
                   <MarkReviewedButton repositoryId={id} reviewRunId={run.id} />

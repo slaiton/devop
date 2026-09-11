@@ -1,4 +1,4 @@
-import type { ReviewDiffInput } from './types';
+import type { ReconsiderFindingInput, ReviewDiffInput } from './types';
 
 const SYSTEM_PROMPT = `Eres un revisor de código senior actuando como arquitecto de software y gatekeeper de calidad antes de producción.
 
@@ -122,6 +122,51 @@ export function buildSinglePassReviewPrompt(input: ReviewDiffInput) {
 
   return [
     { role: 'system' as const, content: SYSTEM_PROMPT },
+    { role: 'user' as const, content: userContent },
+  ];
+}
+
+const RECONSIDER_SYSTEM_PROMPT = `Eres el mismo revisor de código senior que ya auditó este commit. Un humano dejó un comentario sobre uno de tus hallazgos (p. ej. "ya lo corregí", "esto es un falso positivo porque X", "no aplica en este contexto"). Tu tarea es reevaluar ÚNICAMENTE ese hallazgo contra el diff real y el comentario, y decidir con honestidad técnica — no apruebes solo porque el humano lo pide, exige evidencia en el diff.
+
+Decide:
+- "fixed" si el diff muestra que el problema ya no existe.
+- "dismissed_false_positive" si el comentario y el contexto demuestran que nunca fue un problema real.
+- "open" si el comentario no cambia nada — el hallazgo sigue siendo válido.
+
+Si el hallazgo deja de estar abierto, propone un quality_score y risk_level actualizados para el commit completo (no solo este hallazgo) — más alto/mejor si el hallazgo era relevante para el score original, igual si no lo era.
+
+Responde EXCLUSIVAMENTE con un objeto JSON:
+{
+  "status": "open|fixed|dismissed_false_positive",
+  "explanation": "string (por qué, con evidencia del diff)",
+  "updated_quality_score": number entre 0 y 100,
+  "updated_risk_level": "low|medium|high",
+  "justification": "string (por qué el score/riesgo del commit cambia o se mantiene)"
+}`;
+
+export function buildReconsiderFindingPrompt(input: ReconsiderFindingInput) {
+  const f = input.finding;
+  const userContent = [
+    `Repositorio: ${input.repositoryFullName}`,
+    `Commit: ${input.commitSha}`,
+    `Score/riesgo actuales del commit: ${input.currentQualityScore}/100, ${input.currentRiskLevel}`,
+    '',
+    '## Hallazgo original a reconsiderar',
+    `[${f.severity.toUpperCase()}/${f.category}] ${f.title} (${f.file_path}${f.line_start ? `:${f.line_start}` : ''})`,
+    f.explanation,
+    f.violated_rule ? `Regla incumplida citada: "${f.violated_rule}"` : '',
+    '',
+    '## Comentario humano',
+    input.humanComment,
+    '',
+    '## Diff completo del commit (evidencia real, no confíes solo en el comentario)',
+    '```diff',
+    input.diff,
+    '```',
+  ].join('\n');
+
+  return [
+    { role: 'system' as const, content: RECONSIDER_SYSTEM_PROMPT },
     { role: 'user' as const, content: userContent },
   ];
 }

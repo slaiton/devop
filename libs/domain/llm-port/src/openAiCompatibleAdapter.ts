@@ -1,7 +1,15 @@
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { reviewResultSchema, type ReviewDiffInput, type ReviewResult } from './types';
-import { buildSinglePassReviewPrompt } from './prompt';
+import type { ZodSchema } from 'zod';
+import {
+  reconsiderFindingResultSchema,
+  reviewResultSchema,
+  type ReconsiderFindingInput,
+  type ReconsiderFindingResult,
+  type ReviewDiffInput,
+  type ReviewResult,
+} from './types';
+import { buildReconsiderFindingPrompt, buildSinglePassReviewPrompt } from './prompt';
 import type { LlmPort } from './llmPort';
 
 /**
@@ -23,14 +31,27 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
 
   async reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> {
     const messages = buildSinglePassReviewPrompt(input);
-    const raw = await this.requestCompletion(messages);
+    return this.requestStructured(messages, reviewResultSchema);
+  }
 
+  async reconsiderFinding(input: ReconsiderFindingInput): Promise<ReconsiderFindingResult> {
+    const messages = buildReconsiderFindingPrompt(input);
+    return this.requestStructured(messages, reconsiderFindingResultSchema);
+  }
+
+  async embed(text: string): Promise<number[]> {
+    return this.embeddingFn(text);
+  }
+
+  /** Pide una respuesta JSON y la valida contra `schema`; los modelos open-source son
+   * menos consistentes con JSON estricto que los modelos de frontera cerrados, así que
+   * un reintento con el error de validación adjunto resuelve la mayoría de los casos
+   * sin intervención humana. */
+  private async requestStructured<T>(messages: ChatCompletionMessageParam[], schema: ZodSchema<T>): Promise<T> {
+    const raw = await this.requestCompletion(messages);
     try {
-      return reviewResultSchema.parse(JSON.parse(raw));
+      return schema.parse(JSON.parse(raw));
     } catch (err) {
-      // Los modelos open-source son menos consistentes con JSON estricto que los
-      // modelos de frontera cerrados: un reintento con el error de validación
-      // adjunto resuelve la mayoría de los casos sin intervención humana.
       const retryMessages: ChatCompletionMessageParam[] = [
         ...messages,
         { role: 'assistant', content: raw },
@@ -40,12 +61,8 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
         },
       ];
       const retryRaw = await this.requestCompletion(retryMessages);
-      return reviewResultSchema.parse(JSON.parse(retryRaw));
+      return schema.parse(JSON.parse(retryRaw));
     }
-  }
-
-  async embed(text: string): Promise<number[]> {
-    return this.embeddingFn(text);
   }
 
   private async requestCompletion(messages: ChatCompletionMessageParam[]): Promise<string> {

@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import parseDiff from 'parse-diff';
 import { GateBadge } from '../../GateBadge';
+import { ReconsiderFindingButton } from './ReconsiderFindingButton';
 
 interface Finding {
   id: string;
@@ -14,6 +15,9 @@ interface Finding {
   explanation: string;
   blocking: boolean;
   violated_rule: string | null;
+  status: 'open' | 'fixed' | 'dismissed_false_positive';
+  resolution_comment: string | null;
+  resolved_at: string | null;
 }
 
 interface ReviewRunDetail {
@@ -59,7 +63,13 @@ function findingsForLine(findings: Finding[], filePath: string, line: number): F
     .sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0));
 }
 
-function FindingRow({ f }: { f: Finding }) {
+const FINDING_STATUS_LABEL: Record<Finding['status'], string> = {
+  open: 'abierto',
+  fixed: 'corregido',
+  dismissed_false_positive: 'falso positivo',
+};
+
+function FindingRow({ f, repositoryId, reviewRunId }: { f: Finding; repositoryId: string; reviewRunId: string }) {
   return (
     <li>
       <span className={`badge badge-${f.severity === 'critical' || f.severity === 'high' ? 'high' : f.severity === 'medium' ? 'medium' : 'low'}`}>
@@ -67,12 +77,30 @@ function FindingRow({ f }: { f: Finding }) {
       </span>{' '}
       {f.blocking && <strong className="status-bad">bloqueante</strong>} {f.title} <em>({f.file_path}
       {f.line_start ? `:${f.line_start}` : ''})</em>
+      {f.status !== 'open' && (
+        <>
+          {' '}
+          <span className="badge badge-low">{FINDING_STATUS_LABEL[f.status]}</span>
+        </>
+      )}
       <br />
       {f.explanation}
       {f.violated_rule && (
         <>
           <br />
           <em>Regla incumplida: “{f.violated_rule}”</em>
+        </>
+      )}
+      {f.resolution_comment && (
+        <>
+          <br />
+          <em>Comentario: “{f.resolution_comment}”</em>
+        </>
+      )}
+      {f.status === 'open' && (
+        <>
+          <br />
+          <ReconsiderFindingButton repositoryId={repositoryId} reviewRunId={reviewRunId} findingId={f.id} />
         </>
       )}
     </li>
@@ -143,7 +171,7 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
         {critical.length > 0 && (
           <ul>
             {critical.map((f) => (
-              <FindingRow key={f.id} f={f} />
+              <FindingRow key={f.id} f={f} repositoryId={run.repository_id} reviewRunId={run.id} />
             ))}
           </ul>
         )}
@@ -153,7 +181,7 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
         {important.length > 0 && (
           <ul>
             {important.map((f) => (
-              <FindingRow key={f.id} f={f} />
+              <FindingRow key={f.id} f={f} repositoryId={run.repository_id} reviewRunId={run.id} />
             ))}
           </ul>
         )}
@@ -163,7 +191,7 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
         {minor.length > 0 && (
           <ul>
             {minor.map((f) => (
-              <FindingRow key={f.id} f={f} />
+              <FindingRow key={f.id} f={f} repositoryId={run.repository_id} reviewRunId={run.id} />
             ))}
           </ul>
         )}
@@ -270,7 +298,7 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
                 <h3>Hallazgos en este archivo</h3>
                 <ul>
                   {fileFindings.map((f) => (
-                    <FindingRow key={f.id} f={f} />
+                    <FindingRow key={f.id} f={f} repositoryId={run.repository_id} reviewRunId={run.id} />
                   ))}
                 </ul>
               </div>

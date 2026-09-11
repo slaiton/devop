@@ -265,16 +265,19 @@ export class ReviewService {
   }
 
   /** Crea el PR automáticamente cuando el repo tiene auto_create_pr_on_push activo y el
-   * push a la rama origen salió APTO — no tiene sentido abrir un PR de código que la
-   * propia IA marcó NO APTO. Sin el flag, la creación queda solo para el botón manual
-   * (PullRequestsService en apps/api). */
+   * push a la rama origen es elegible: APTO, o riesgo medio con score <=70 (regla dura
+   * de NO APTO sigue bloqueando siempre). Sin el flag, la creación queda solo para el
+   * botón manual (PullRequestsService en apps/api). */
   private async maybeAutoCreatePullRequest(
     gitAdapter: GitProviderPort,
     payload: ReviewJobPayload,
     result: ReviewResult,
     gateDecision: GateDecision,
   ): Promise<void> {
-    if (payload.pullNumber || gateDecision !== 'apto') return;
+    const eligible =
+      gateDecision !== 'no_apto' &&
+      (gateDecision === 'apto' || (result.risk_level === 'medium' && result.quality_score <= 70));
+    if (payload.pullNumber || !eligible) return;
 
     const config = await this.getPrAutoCreateConfig(payload.organizationId, payload.repositoryId);
     if (!config.auto_create_pr_on_push || payload.branch !== config.promotion_source_branch) return;

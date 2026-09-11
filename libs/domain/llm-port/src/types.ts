@@ -100,3 +100,23 @@ export interface ReviewDiffInput {
   recentCommits?: RecentCommit[];
   analyzedFiles: string[];
 }
+
+export const reconsiderFindingResultSchema = z.object({
+  status: z.enum(['open', 'fixed', 'dismissed_false_positive']),
+  explanation: z.string(),
+  updated_quality_score: z.number().int().min(0).max(100),
+  updated_risk_level: z.enum(['low', 'medium', 'high']),
+  justification: z.string(),
+});
+
+export type ReconsiderFindingResult = z.infer<typeof reconsiderFindingResultSchema>;
+
+export interface ReconsiderFindingInput {
+  repositoryFullName: string;
+  commitSha: string;
+  diff: string;
+  finding: Finding;
+  humanComment: string;
+  currentQualityScore: number;
+  currentRiskLevel: 'low' | 'medium' | 'high';
+}

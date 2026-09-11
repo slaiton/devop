@@ -1,7 +1,10 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
 import { getPool, withTenant } from '@devsentinel/database';
 import { GithubAdapter } from '@devsentinel/git-providers';
 import { getSystemSettings } from '@devsentinel/settings';
+import { RECONSIDER_QUEUE_NAME, type ReconsiderJobPayload } from '@devsentinel/event-contracts';
 import { EmailService } from '../../common/email.service';
 
 interface Actor {
@@ -13,7 +16,10 @@ const SEVERITY_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2
 
 @Injectable()
 export class DashboardService {
-  constructor(private readonly emailService: EmailService) {}
+  constructor(
+    private readonly emailService: EmailService,
+    @InjectQueue(RECONSIDER_QUEUE_NAME) private readonly reconsiderQueue: Queue<ReconsiderJobPayload>,
+  ) {}
 
   private async getAdapter(): Promise<GithubAdapter> {
     const settings = await getSystemSettings(getPool());
@@ -120,6 +126,40 @@ export class DashboardService {
       if (!rows[0]) throw new NotFoundException('review run not found');
       return rows[0];
     });
+  }
+
+  /** Encola la reconsideración con el LLM — no se llama al modelo desde `api`, esa
+   * lógica vive solo en el `worker` (mismo criterio que el resto del análisis). */
+  async requestFindingReconsideration(
+    orgId: string,
+    repositoryId: string,
+    reviewRunId: string,
+    findingId: string,
+    comment: string,
+    userId: string,
+  ): Promise<{ queued: true }> {
+    if (!comment?.trim()) throw new BadRequestException('el comentario no puede estar vacío');
+
+    await withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT f.id FROM findings f
+         JOIN review_runs rr ON rr.id = f.review_run_id
+         WHERE f.id = $1 AND rr.id = $2 AND rr.repository_id = $3`,
+        [findingId, reviewRunId, repositoryId],
+      );
+      if (!rows[0]) throw new NotFoundException('finding not found');
+    });
+
+    await this.reconsiderQueue.add(RECONSIDER_QUEUE_NAME, {
+      findingId,
+      reviewRunId,
+      organizationId: orgId,
+      repositoryId,
+      comment: comment.trim(),
+      requestedBy: userId,
+    });
+
+    return { queued: true };
   }
 
   async getProjectProfile(orgId: string, repositoryId: string) {
