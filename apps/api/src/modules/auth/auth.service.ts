@@ -148,8 +148,9 @@ export class AuthService {
     });
   }
 
-  /** Invita a alguien por username de GitHub (API pública, sin auth) con rol "usuario"
-   * (developer) — no requiere que esa persona haya iniciado sesión todavía. */
+  /** Invita a alguien por username de GitHub (API pública, sin auth) con rol "user" —
+   * no requiere que esa persona haya iniciado sesión todavía. Sin repos asignados
+   * todavía no ve nada (ver repository_members / dashboard.service.addRepositoryMember). */
   async inviteUser(organizationId: string, githubLogin: string): Promise<{ userId: string }> {
     const res = await fetch(`https://api.github.com/users/${encodeURIComponent(githubLogin)}`, {
       headers: { 'User-Agent': 'devsentinel-ai', Accept: 'application/vnd.github+json' },
@@ -171,7 +172,7 @@ export class AuthService {
     await withTenant(organizationId, async (client) => {
       await client.query(
         `INSERT INTO org_memberships (organization_id, user_id, role)
-         VALUES ($1, $2, 'developer')
+         VALUES ($1, $2, 'user')
          ON CONFLICT (organization_id, user_id) DO NOTHING`,
         [organizationId, userId],
       );

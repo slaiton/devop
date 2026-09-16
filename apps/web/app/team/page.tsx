@@ -22,7 +22,7 @@ async function fetchTeam(): Promise<TeamMemberRow[]> {
   return res.json();
 }
 
-const ROLE_LABEL: Record<string, string> = { admin: 'Admin', developer: 'Usuario', owner: 'Owner', viewer: 'Viewer' };
+const ROLE_LABEL: Record<string, string> = { admin: 'Admin', user: 'Usuario' };
 
 export default async function TeamPage() {
   const session = await getSession();

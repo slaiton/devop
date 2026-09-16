@@ -1,10 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { getPool, withTenant } from '@devsentinel/database';
 import { GithubAdapter, type GitProviderPort } from '@devsentinel/git-providers';
 import { OpenAiCompatibleLlmAdapter, embedLocally, type ProjectProfile, type ReviewResult } from '@devsentinel/llm-port';
 import { getSystemSettings } from '@devsentinel/settings';
 import type { ReviewJobPayload } from '@devsentinel/event-contracts';
 import { buildPullRequestContent } from '@devsentinel/pr-content';
+import { upsertFindingsIssue } from '@devsentinel/issue-content';
 import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
 import { RagContextService } from './ragContext.service';
@@ -29,6 +30,8 @@ const HARD_BLOCK_CATEGORIES = new Set(['security', 'architecture', 'database', '
 
 @Injectable()
 export class ReviewService {
+  private readonly logger = new Logger(ReviewService.name);
+
   constructor(
     private readonly checkout: RepoCheckoutService,
     private readonly staticAnalysis: StaticAnalysisService,
@@ -122,8 +125,13 @@ export class ReviewService {
 
       await this.persistResult(payload, result, gateDecision, analyzedFiles);
       await this.publishToGithub(gitAdapter, payload, result, gateDecision);
+      await this.syncFindingsIssue(gitAdapter, payload, result, gateDecision);
       await this.maybeAutoCreatePullRequest(gitAdapter, payload, result, gateDecision);
     } catch (err) {
+      this.logger.error(
+        `review run ${payload.reviewRunId} failed for ${payload.owner}/${payload.repo}@${payload.commitSha}: ${(err as Error).message}`,
+        (err as Error).stack,
+      );
       await this.markFailed(payload, (err as Error).message);
       throw err;
     }
@@ -262,6 +270,51 @@ export class ReviewService {
       title,
       summary: result.resumen_ejecutivo,
     });
+  }
+
+  /** Crea/actualiza/cierra el issue de hallazgos bloqueantes del PR (o branch, sin
+   * PR) — se llama siempre, no solo en no_apto, porque también debe cerrar el issue
+   * cuando un push nuevo ya sale limpio. Un fallo acá no debe marcar todo el review
+   * run como failed (el análisis en sí ya se publicó bien); solo se loguea. */
+  private async syncFindingsIssue(
+    gitAdapter: GitProviderPort,
+    payload: ReviewJobPayload,
+    result: ReviewResult,
+    gateDecision: GateDecision,
+  ): Promise<void> {
+    try {
+      await withTenant(payload.organizationId, async (client) => {
+        const { rows } = await client.query('SELECT pull_request_id FROM review_runs WHERE id = $1', [
+          payload.reviewRunId,
+        ]);
+        const pullRequestId: string | null = rows[0]?.pull_request_id ?? null;
+
+        await upsertFindingsIssue(client, gitAdapter, {
+          organizationId: payload.organizationId,
+          repositoryId: payload.repositoryId,
+          installationId: payload.installationId,
+          owner: payload.owner,
+          repo: payload.repo,
+          repositoryFullName: `${payload.owner}/${payload.repo}`,
+          pullRequestId,
+          pullRequestNumber: payload.pullNumber ?? null,
+          branch: payload.branch,
+          commitSha: payload.commitSha,
+          reviewRunId: payload.reviewRunId,
+          reviewRun: {
+            gate_decision: gateDecision,
+            quality_score: result.quality_score,
+            risk_level: result.risk_level,
+            summary: result.resumen_ejecutivo,
+          },
+        });
+      });
+    } catch (err) {
+      this.logger.error(
+        `no se pudo sincronizar el issue de hallazgos del review run ${payload.reviewRunId}: ${(err as Error).message}`,
+        (err as Error).stack,
+      );
+    }
   }
 
   /** Crea el PR automáticamente cuando el repo tiene auto_create_pr_on_push activo y el

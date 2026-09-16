@@ -87,6 +87,59 @@ export interface PullRequestStatus {
   checks: PullRequestCheck[];
 }
 
+export interface IssueRef {
+  installationId: number;
+  owner: string;
+  repo: string;
+  issueNumber: number;
+}
+
+export interface CreateIssueParams {
+  installationId: number;
+  owner: string;
+  repo: string;
+  title: string;
+  body: string;
+}
+
+export interface UpdateIssueParams extends IssueRef {
+  title?: string;
+  body?: string;
+}
+
+export interface SetIssueStateParams extends IssueRef {
+  state: 'open' | 'closed';
+  stateReason?: 'completed' | 'not_planned' | 'reopened';
+}
+
+export interface IssueCommentParams extends IssueRef {
+  body: string;
+}
+
+export interface CreatedIssue {
+  number: number;
+  htmlUrl: string;
+}
+
+export interface GithubIssueSummary {
+  number: number;
+  title: string;
+  body: string | null;
+  state: 'open' | 'closed';
+  stateReason: string | null;
+  authorLogin: string | null;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+}
+
+export interface ListIssuesParams {
+  installationId: number;
+  owner: string;
+  repo: string;
+  state?: 'open' | 'closed' | 'all';
+}
+
 /**
  * Puerto genérico para cualquier proveedor Git. El MVP solo implementa
  * GithubAdapter; GitLab/Bitbucket en V1 implementan el mismo puerto sin
@@ -107,4 +160,9 @@ export interface GitProviderPort {
   findOpenPullRequest(params: FindOpenPullRequestParams): Promise<{ number: number } | null>;
   createPullRequest(params: CreatePullRequestParams): Promise<CreatedPullRequest>;
   getPullRequestStatus(params: PullRequestRef): Promise<PullRequestStatus>;
+  createIssue(params: CreateIssueParams): Promise<CreatedIssue>;
+  updateIssue(params: UpdateIssueParams): Promise<void>;
+  setIssueState(params: SetIssueStateParams): Promise<void>;
+  postIssueComment(params: IssueCommentParams): Promise<{ commentId: number }>;
+  listIssues(params: ListIssuesParams): Promise<GithubIssueSummary[]>;
 }

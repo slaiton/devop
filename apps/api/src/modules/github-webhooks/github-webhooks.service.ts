@@ -5,10 +5,14 @@ import { GithubAdapter } from '@devsentinel/git-providers';
 import { getPool, withTenant } from '@devsentinel/database';
 import { getSystemSettings } from '@devsentinel/settings';
 import { REVIEW_QUEUE_NAME, type ReviewJobPayload } from '@devsentinel/event-contracts';
+import { IssuesSyncService } from './issuesSync.service';
 
 @Injectable()
 export class GithubWebhooksService {
-  constructor(@InjectQueue(REVIEW_QUEUE_NAME) private readonly queue: Queue<ReviewJobPayload>) {}
+  constructor(
+    @InjectQueue(REVIEW_QUEUE_NAME) private readonly queue: Queue<ReviewJobPayload>,
+    private readonly issuesSync: IssuesSyncService,
+  ) {}
 
   async verifySignature(rawBody: Buffer, signature: string | undefined): Promise<boolean> {
     const settings = await getSystemSettings(getPool());
@@ -37,6 +41,12 @@ export class GithubWebhooksService {
         if (['opened', 'synchronize', 'reopened'].includes(payload.action)) {
           await this.handlePullRequest(payload);
         }
+        return;
+      case 'issues':
+        await this.issuesSync.handleIssueEvent(payload);
+        return;
+      case 'issue_comment':
+        await this.issuesSync.handleIssueCommentEvent(payload);
         return;
       default:
         return;

@@ -1,5 +1,4 @@
 import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
 import { getSession } from './session';
 
 interface Repository {
@@ -48,22 +47,28 @@ export default async function HomePage() {
     );
   }
 
-  if (session.role !== 'admin') {
-    redirect('/me');
-  }
-
+  const isAdmin = session.role === 'admin';
   const repositories = await fetchRepositories();
 
   return (
     <main>
       <p>
-        <a href="/overview">Ver pendientes</a> · <a href="/developers">Developers</a> ·{' '}
-        <a href="/team">Equipo</a> · <a href="/accounts">Cuentas de GitHub</a> ·{' '}
-        <a href="/settings">Configuración del sistema</a> · <a href="/me">Mi perfil</a>
+        {isAdmin && (
+          <>
+            <a href="/overview">Ver pendientes</a> · <a href="/developers">Developers</a> ·{' '}
+            <a href="/team">Equipo</a> · <a href="/accounts">Cuentas de GitHub</a> ·{' '}
+            <a href="/settings">Configuración del sistema</a> ·{' '}
+          </>
+        )}
+        <a href="/me">Mi perfil</a>
       </p>
       <h1>Repositorios</h1>
       {repositories.length === 0 ? (
-        <p>Todavía no hay repositorios conectados. Instala la GitHub App en tu organización para empezar.</p>
+        <p>
+          {isAdmin
+            ? 'Todavía no hay repositorios conectados. Instala la GitHub App en tu organización para empezar.'
+            : 'Todavía no tienes repositorios asignados. Pídele a un admin que te dé acceso desde la página del repositorio.'}
+        </p>
       ) : (
         <table>
           <thead>

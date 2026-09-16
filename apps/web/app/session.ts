@@ -3,7 +3,7 @@ import { cookies } from 'next/headers';
 export interface Session {
   userId: string;
   orgId: string;
-  role: 'admin' | 'developer' | 'owner' | 'viewer' | null;
+  role: 'admin' | 'user' | null;
   name: string | null;
   avatarUrl: string | null;
   email: string | null;

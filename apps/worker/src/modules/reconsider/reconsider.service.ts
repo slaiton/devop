@@ -5,6 +5,7 @@ import { GithubAdapter } from '@devsentinel/git-providers';
 import { OpenAiCompatibleLlmAdapter, embedLocally } from '@devsentinel/llm-port';
 import { getSystemSettings } from '@devsentinel/settings';
 import type { ReconsiderJobPayload } from '@devsentinel/event-contracts';
+import { upsertFindingsIssue } from '@devsentinel/issue-content';
 
 interface QualityGateConfig {
   block_on_risk_level: 'medium' | 'high';
@@ -42,7 +43,7 @@ export class ReconsiderService {
 
       const { rows: runRows } = await client.query(
         `SELECT rr.commit_sha, rr.quality_score, rr.risk_level, rr.gate_decision, rr.pull_request_id,
-                r.full_name, gi.installation_id, pr.github_pr_number
+                rr.branch, rr.summary, r.full_name, gi.installation_id, pr.github_pr_number
          FROM review_runs rr
          JOIN repositories r ON r.id = rr.repository_id
          JOIN github_installations gi ON gi.id = r.github_installation_id
@@ -123,6 +124,36 @@ export class ReconsiderService {
           title,
           summary: result.justification,
         });
+      }
+
+      // Siempre, no solo si cambió el veredicto: reconsiderar un finding puede
+      // sacarlo del set de bloqueantes aunque el gate_decision general no cambie.
+      // Un fallo acá no debe tumbar la reconsideración ya aplicada; solo se loguea.
+      try {
+        await upsertFindingsIssue(client, gitAdapter, {
+          organizationId: payload.organizationId,
+          repositoryId: payload.repositoryId,
+          installationId,
+          owner,
+          repo,
+          repositoryFullName: run.full_name,
+          pullRequestId: run.pull_request_id,
+          pullRequestNumber: run.github_pr_number ?? null,
+          branch: run.branch,
+          commitSha: run.commit_sha,
+          reviewRunId: payload.reviewRunId,
+          reviewRun: {
+            gate_decision: newGateDecision,
+            quality_score: result.updated_quality_score,
+            risk_level: result.updated_risk_level,
+            summary: run.summary,
+          },
+        });
+      } catch (err) {
+        this.logger.error(
+          `no se pudo sincronizar el issue de hallazgos del review run ${payload.reviewRunId}: ${(err as Error).message}`,
+          (err as Error).stack,
+        );
       }
     });
   }

@@ -1,4 +1,4 @@
-import type { ReconsiderFindingInput, ReviewDiffInput } from './types';
+import type { IssueReplySuggestionInput, ReconsiderFindingInput, ReviewDiffInput } from './types';
 
 const SYSTEM_PROMPT = `Eres un revisor de código senior actuando como arquitecto de software y gatekeeper de calidad antes de producción.
 
@@ -167,6 +167,49 @@ export function buildReconsiderFindingPrompt(input: ReconsiderFindingInput) {
 
   return [
     { role: 'system' as const, content: RECONSIDER_SYSTEM_PROMPT },
+    { role: 'user' as const, content: userContent },
+  ];
+}
+
+const ISSUE_REPLY_SYSTEM_PROMPT = `Eres el mismo revisor de código senior que dejó los hallazgos bloqueantes de este issue. Redacta un BORRADOR de respuesta al hilo de comentarios, en tono técnico y directo, dirigido a quien está trabajando en resolverlos.
+
+Este es solo un borrador: un humano lo va a revisar y editar antes de publicarlo, así que no hables como si ya lo hubieras publicado ni prometas acciones futuras de tu parte — limítate a responder la conversación con base en los hallazgos bloqueantes vigentes y el hilo de comentarios.
+
+Responde EXCLUSIVAMENTE con un objeto JSON:
+{
+  "reply": "string (el borrador de respuesta, en el idioma del hilo de comentarios)"
+}`;
+
+export function buildIssueReplySuggestionPrompt(input: IssueReplySuggestionInput) {
+  const findingsText = input.blockingFindings.length
+    ? input.blockingFindings
+        .map(
+          (f) =>
+            `- [${f.severity.toUpperCase()}/${f.category}] ${f.title} (${f.file_path}${f.line_start ? `:${f.line_start}` : ''})\n  ${f.explanation}`,
+        )
+        .join('\n')
+    : '(sin hallazgos bloqueantes vigentes)';
+
+  const commentsText = input.comments.length
+    ? input.comments.map((c) => `- ${c.authorLogin ?? 'desconocido'} (${c.source}): ${c.body}`).join('\n')
+    : '(sin comentarios todavía)';
+
+  const userContent = [
+    `Repositorio: ${input.repositoryFullName}`,
+    `Issue: ${input.issueTitle}`,
+    '',
+    '## Cuerpo del issue',
+    input.issueBody,
+    '',
+    '## Hallazgos bloqueantes vigentes',
+    findingsText,
+    '',
+    '## Hilo de comentarios (orden cronológico)',
+    commentsText,
+  ].join('\n');
+
+  return [
+    { role: 'system' as const, content: ISSUE_REPLY_SYSTEM_PROMPT },
     { role: 'user' as const, content: userContent },
   ];
 }

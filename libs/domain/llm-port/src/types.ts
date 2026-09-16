@@ -120,3 +120,23 @@ export interface ReconsiderFindingInput {
   currentQualityScore: number;
   currentRiskLevel: 'low' | 'medium' | 'high';
 }
+
+export const issueReplySuggestionResultSchema = z.object({
+  reply: z.string(),
+});
+
+export type IssueReplySuggestionResult = z.infer<typeof issueReplySuggestionResultSchema>;
+
+export interface IssueReplyComment {
+  authorLogin: string | null;
+  body: string;
+  source: 'github' | 'devsentinel';
+}
+
+export interface IssueReplySuggestionInput {
+  repositoryFullName: string;
+  issueTitle: string;
+  issueBody: string;
+  comments: IssueReplyComment[];
+  blockingFindings: Finding[];
+}

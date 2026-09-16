@@ -11,6 +11,7 @@
     "@devsentinel/database": "*",
     "@devsentinel/event-contracts": "*",
     "@devsentinel/git-providers": "*",
+    "@devsentinel/issue-content": "*",
     "@devsentinel/llm-port": "*",
     "@devsentinel/pr-content": "*",
     "@devsentinel/settings": "*",

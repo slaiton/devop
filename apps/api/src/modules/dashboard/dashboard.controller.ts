@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
 import { RolesGuard } from '../../common/roles.guard';
 import { Roles } from '../../common/roles.decorator';
@@ -38,7 +38,7 @@ export class DashboardController {
     private readonly authService: AuthService,
   ) {}
 
-  // ---- Vista personal ("usuario") — sin @Roles, abierta a admin y developer ----
+  // ---- Vista personal ("usuario") — sin @Roles, abierta a admin y user ----
 
   @Get('me/profile')
   getMyProfile(@CurrentOrg() orgId: string, @CurrentUser() userId: string) {
@@ -85,19 +85,75 @@ export class DashboardController {
     return this.authService.inviteUser(orgId, body.githubLogin);
   }
 
-  // ---- Todo lo demás es gestión de repos/organización — solo admin ----
+  // ---- Repos: lectura abierta a admin y a "user" con el repo asignado ----
 
   @Get('repositories')
-  @Roles('admin')
-  listRepositories(@CurrentOrg() orgId: string) {
-    return this.dashboardService.listRepositories(orgId);
+  listRepositories(@CurrentOrg() orgId: string, @CurrentUser() userId: string, @CurrentRole() role: string) {
+    return this.dashboardService.listRepositories(orgId, { userId, role });
   }
 
   @Get('repositories/:repositoryId/settings')
-  @Roles('admin')
-  getRepositorySettings(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
+  async getRepositorySettings(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @CurrentRole() role: string,
+    @Param('repositoryId') repositoryId: string,
+  ) {
+    await this.dashboardService.assertRepoAccess(orgId, repositoryId, { userId, role });
     return this.dashboardService.getRepositorySettings(orgId, repositoryId);
   }
+
+  @Get('repositories/:repositoryId/project-profile')
+  async getProjectProfile(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @CurrentRole() role: string,
+    @Param('repositoryId') repositoryId: string,
+  ) {
+    await this.dashboardService.assertRepoAccess(orgId, repositoryId, { userId, role });
+    return this.dashboardService.getProjectProfile(orgId, repositoryId);
+  }
+
+  @Get('repositories/:repositoryId/pushes')
+  async listPushes(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @CurrentRole() role: string,
+    @Param('repositoryId') repositoryId: string,
+  ) {
+    await this.dashboardService.assertRepoAccess(orgId, repositoryId, { userId, role });
+    return this.dashboardService.listPushes(orgId, repositoryId);
+  }
+
+  // ---- Acceso a repos por usuario (solo admin) ----
+
+  @Get('repositories/:repositoryId/members')
+  @Roles('admin')
+  listRepositoryMembers(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
+    return this.dashboardService.listRepositoryMembers(orgId, repositoryId);
+  }
+
+  @Post('repositories/:repositoryId/members')
+  @Roles('admin')
+  addRepositoryMember(
+    @CurrentOrg() orgId: string,
+    @Param('repositoryId') repositoryId: string,
+    @Body() body: { userId: string },
+  ) {
+    return this.dashboardService.addRepositoryMember(orgId, repositoryId, body.userId);
+  }
+
+  @Delete('repositories/:repositoryId/members/:userId')
+  @Roles('admin')
+  removeRepositoryMember(
+    @CurrentOrg() orgId: string,
+    @Param('repositoryId') repositoryId: string,
+    @Param('userId') userId: string,
+  ) {
+    return this.dashboardService.removeRepositoryMember(orgId, repositoryId, userId);
+  }
+
+  // ---- Todo lo demás es gestión de repos/organización — solo admin ----
 
   @Patch('repositories/:repositoryId/settings')
   @Roles('admin')
@@ -107,12 +163,6 @@ export class DashboardController {
     @Body() body: UpdateRepositorySettingsBody,
   ) {
     return this.dashboardService.updateRepositorySettings(orgId, repositoryId, body);
-  }
-
-  @Get('repositories/:repositoryId/project-profile')
-  @Roles('admin')
-  getProjectProfile(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
-    return this.dashboardService.getProjectProfile(orgId, repositoryId);
   }
 
   @Patch('repositories/:repositoryId/project-profile')
@@ -133,12 +183,6 @@ export class DashboardController {
     @Param('reviewRunId') reviewRunId: string,
   ) {
     return this.dashboardService.notifyReviewRun(orgId, repositoryId, reviewRunId);
-  }
-
-  @Get('repositories/:repositoryId/pushes')
-  @Roles('admin')
-  listPushes(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
-    return this.dashboardService.listPushes(orgId, repositoryId);
   }
 
   @Post('repositories/:repositoryId/review-runs/:reviewRunId/mark-reviewed')

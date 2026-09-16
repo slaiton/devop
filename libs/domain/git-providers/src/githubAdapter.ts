@@ -4,16 +4,23 @@ import { createAppAuth } from '@octokit/auth-app';
 import type {
   CheckRunParams,
   CommitRef,
+  CreatedIssue,
   CreatedPullRequest,
+  CreateIssueParams,
   CreatePullRequestParams,
   FindOpenPullRequestParams,
+  GithubIssueSummary,
   GitProviderPort,
+  IssueCommentParams,
+  ListIssuesParams,
   MergeBranchParams,
   PullRequestRef,
   PullRequestStatus,
   RecentCommitInfo,
   ReviewCommentParams,
+  SetIssueStateParams,
   SummaryCommentParams,
+  UpdateIssueParams,
 } from './gitProviderPort';
 
 export interface GithubAdapterConfig {
@@ -77,13 +84,9 @@ export class GithubAdapter implements GitProviderPort {
   }
 
   async postSummaryComment(params: SummaryCommentParams): Promise<void> {
-    const client = this.getInstallationClient(params.installationId);
-    await client.issues.createComment({
-      owner: params.owner,
-      repo: params.repo,
-      issue_number: params.pullNumber,
-      body: params.body,
-    });
+    // En la API de GitHub un PR es un issue (mismo espacio de numeración), así que el
+    // comentario de resumen del PR es, técnicamente, un comentario de issue.
+    await this.postIssueComment({ ...params, issueNumber: params.pullNumber });
   }
 
   async setCheckRunStatus(params: CheckRunParams): Promise<void> {
@@ -195,6 +198,76 @@ export class GithubAdapter implements GitProviderPort {
       headSha: pr.head.sha,
       checks: checkRuns.check_runs.map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion })),
     };
+  }
+
+  async createIssue(params: CreateIssueParams): Promise<CreatedIssue> {
+    const client = this.getInstallationClient(params.installationId);
+    const { data } = await client.issues.create({
+      owner: params.owner,
+      repo: params.repo,
+      title: params.title,
+      body: params.body,
+    });
+    return { number: data.number, htmlUrl: data.html_url };
+  }
+
+  async updateIssue(params: UpdateIssueParams): Promise<void> {
+    const client = this.getInstallationClient(params.installationId);
+    await client.issues.update({
+      owner: params.owner,
+      repo: params.repo,
+      issue_number: params.issueNumber,
+      title: params.title,
+      body: params.body,
+    });
+  }
+
+  async setIssueState(params: SetIssueStateParams): Promise<void> {
+    const client = this.getInstallationClient(params.installationId);
+    await client.issues.update({
+      owner: params.owner,
+      repo: params.repo,
+      issue_number: params.issueNumber,
+      state: params.state,
+      state_reason: params.stateReason,
+    });
+  }
+
+  async postIssueComment(params: IssueCommentParams): Promise<{ commentId: number }> {
+    const client = this.getInstallationClient(params.installationId);
+    const { data } = await client.issues.createComment({
+      owner: params.owner,
+      repo: params.repo,
+      issue_number: params.issueNumber,
+      body: params.body,
+    });
+    return { commentId: data.id };
+  }
+
+  /** Lista todos los issues nativos del repo (para el backfill) — el endpoint de
+   * listado de GitHub también devuelve los PRs (comparten numeración con los
+   * issues), así que se filtran explícitamente. */
+  async listIssues(params: ListIssuesParams): Promise<GithubIssueSummary[]> {
+    const client = this.getInstallationClient(params.installationId);
+    const data = await client.paginate(client.issues.listForRepo, {
+      owner: params.owner,
+      repo: params.repo,
+      state: params.state ?? 'all',
+      per_page: 100,
+    });
+    return data
+      .filter((issue) => !issue.pull_request)
+      .map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        body: issue.body ?? null,
+        state: issue.state as 'open' | 'closed',
+        stateReason: issue.state_reason ?? null,
+        authorLogin: issue.user?.login ?? null,
+        createdAt: issue.created_at,
+        updatedAt: issue.updated_at,
+        closedAt: issue.closed_at ?? null,
+      }));
   }
 
   /** Resuelve el account_login dueño de una instalación a partir de su id — cliente

@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
+import type { PoolClient } from 'pg';
 import { getPool, withTenant } from '@devsentinel/database';
 import { GithubAdapter } from '@devsentinel/git-providers';
 import { getSystemSettings } from '@devsentinel/settings';
@@ -30,15 +31,87 @@ export class DashboardService {
     });
   }
 
-  async listRepositories(orgId: string) {
+  /** admin ve todos los repos de la org; un usuario ("user") solo los que tiene
+   * asignados en repository_members. */
+  async listRepositories(orgId: string, actor: Actor) {
     return withTenant(orgId, async (client) => {
+      if (actor.role === 'admin') {
+        const { rows } = await client.query(
+          `SELECT id, full_name, default_branch, webhook_status, created_at
+           FROM repositories
+           ORDER BY full_name`,
+        );
+        return rows;
+      }
       const { rows } = await client.query(
-        `SELECT id, full_name, default_branch, webhook_status, created_at
-         FROM repositories
-         ORDER BY full_name`,
+        `SELECT r.id, r.full_name, r.default_branch, r.webhook_status, r.created_at
+         FROM repositories r
+         JOIN repository_members rm ON rm.repository_id = r.id
+         WHERE rm.user_id = $1
+         ORDER BY r.full_name`,
+        [actor.userId],
       );
       return rows;
     });
+  }
+
+  private async isRepoMember(client: PoolClient, repositoryId: string, userId: string): Promise<boolean> {
+    const { rows } = await client.query(
+      'SELECT 1 FROM repository_members WHERE repository_id = $1 AND user_id = $2',
+      [repositoryId, userId],
+    );
+    return rows.length > 0;
+  }
+
+  /** Usado por el controller antes de servir cualquier dato de un repo a rutas que ya
+   * no son admin-only: admin pasa siempre, "user" solo si el repo está en su lista de
+   * repository_members. */
+  async assertRepoAccess(orgId: string, repositoryId: string, actor: Actor): Promise<void> {
+    if (actor.role === 'admin') return;
+    const allowed = await withTenant(orgId, (client) => this.isRepoMember(client, repositoryId, actor.userId));
+    if (!allowed) throw new ForbiddenException('no tienes acceso a este repositorio');
+  }
+
+  async listRepositoryMembers(orgId: string, repositoryId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT u.id AS user_id, u.name, u.email, u.avatar_url, rm.created_at
+         FROM repository_members rm
+         JOIN users u ON u.id = rm.user_id
+         WHERE rm.repository_id = $1
+         ORDER BY rm.created_at`,
+        [repositoryId],
+      );
+      return rows;
+    });
+  }
+
+  async addRepositoryMember(orgId: string, repositoryId: string, userId: string) {
+    await withTenant(orgId, async (client) => {
+      const { rows: repoRows } = await client.query('SELECT id FROM repositories WHERE id = $1', [repositoryId]);
+      if (!repoRows[0]) throw new NotFoundException('repository not found');
+
+      const { rows: memberRows } = await client.query(
+        'SELECT id FROM org_memberships WHERE organization_id = $1 AND user_id = $2',
+        [orgId, userId],
+      );
+      if (!memberRows[0]) throw new BadRequestException('el usuario no pertenece a esta organización');
+
+      await client.query(
+        `INSERT INTO repository_members (organization_id, repository_id, user_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (repository_id, user_id) DO NOTHING`,
+        [orgId, repositoryId, userId],
+      );
+    });
+    return this.listRepositoryMembers(orgId, repositoryId);
+  }
+
+  async removeRepositoryMember(orgId: string, repositoryId: string, userId: string) {
+    await withTenant(orgId, async (client) => {
+      await client.query('DELETE FROM repository_members WHERE repository_id = $1 AND user_id = $2', [repositoryId, userId]);
+    });
+    return this.listRepositoryMembers(orgId, repositoryId);
   }
 
   async getRepositorySettings(orgId: string, repositoryId: string) {
@@ -298,17 +371,16 @@ export class DashboardService {
     return withTenant(orgId, async (client) => {
       const { rows: runRows } = await client.query(
         `SELECT rr.*, r.full_name AS repository_full_name,
-                pr.github_pr_number, pr.title AS pull_request_title,
-                d.user_id AS developer_user_id
+                pr.github_pr_number, pr.title AS pull_request_title
          FROM review_runs rr
          JOIN repositories r ON r.id = rr.repository_id
          LEFT JOIN pull_requests pr ON pr.id = rr.pull_request_id
-         LEFT JOIN developers d ON d.id = rr.developer_id
          WHERE rr.id = $1`,
         [reviewRunId],
       );
-      if (!runRows[0]) return null;
-      this.assertCanViewReviewRun(runRows[0], actor);
+      const run = runRows[0];
+      if (!run) return null;
+      await this.assertCanViewReviewRun(client, run, actor);
 
       const { rows: findingRows } = await client.query(
         `SELECT * FROM findings WHERE review_run_id = $1
@@ -316,7 +388,6 @@ export class DashboardService {
            WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) DESC`,
         [reviewRunId],
       );
-      const { developer_user_id, ...run } = runRows[0];
       return { ...run, findings: findingRows };
     });
   }
@@ -324,19 +395,17 @@ export class DashboardService {
   async getReviewRunDiff(orgId: string, reviewRunId: string, actor: Actor): Promise<string> {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `SELECT rr.commit_sha, r.full_name, gi.installation_id, pr.github_pr_number,
-                d.user_id AS developer_user_id
+        `SELECT rr.repository_id, rr.commit_sha, r.full_name, gi.installation_id, pr.github_pr_number
          FROM review_runs rr
          JOIN repositories r ON r.id = rr.repository_id
          JOIN github_installations gi ON gi.id = r.github_installation_id
          LEFT JOIN pull_requests pr ON pr.id = rr.pull_request_id
-         LEFT JOIN developers d ON d.id = rr.developer_id
          WHERE rr.id = $1`,
         [reviewRunId],
       );
       const run = rows[0];
       if (!run) throw new NotFoundException('review run not found');
-      this.assertCanViewReviewRun(run, actor);
+      await this.assertCanViewReviewRun(client, run, actor);
 
       const [owner, repo] = String(run.full_name).split('/');
       const installationId = Number(run.installation_id);
@@ -348,12 +417,12 @@ export class DashboardService {
     });
   }
 
-  /** admin ve cualquier review run de la org; un usuario ("developer") solo el suyo,
-   * resuelto vía developers.user_id enlazado al loguearse. */
-  private assertCanViewReviewRun(run: { developer_user_id: string | null }, actor: Actor): void {
+  /** admin ve cualquier review run de la org; un usuario ("user") solo los de un repo
+   * que tenga asignado en repository_members. */
+  private async assertCanViewReviewRun(client: PoolClient, run: { repository_id: string }, actor: Actor): Promise<void> {
     if (actor.role === 'admin') return;
-    if (run.developer_user_id && run.developer_user_id === actor.userId) return;
-    throw new ForbiddenException('no tienes acceso a este review run');
+    const allowed = await this.isRepoMember(client, run.repository_id, actor.userId);
+    if (!allowed) throw new ForbiddenException('no tienes acceso a este review run');
   }
 
   async getMyProfile(orgId: string, userId: string) {

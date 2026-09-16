@@ -107,16 +107,16 @@ export class PullRequestsService {
 
   async listForRepository(orgId: string, repositoryId: string, actor: Actor) {
     return withTenant(orgId, async (client) => {
+      if (actor.role !== 'admin' && !(await this.isRepoMember(client, repositoryId, actor.userId))) {
+        return [];
+      }
       const { rows } = await client.query(
         `SELECT pr.*,
                 COALESCE(source_rr.quality_score, native_rr.quality_score) AS quality_score,
                 COALESCE(source_rr.risk_level, native_rr.risk_level) AS risk_level,
-                COALESCE(source_rr.gate_decision, native_rr.gate_decision) AS gate_decision,
-                ${this.ownerUserIdSelect()}
+                COALESCE(source_rr.gate_decision, native_rr.gate_decision) AS gate_decision
          FROM pull_requests pr
          LEFT JOIN review_runs source_rr ON source_rr.id = pr.source_review_run_id
-         LEFT JOIN developers rr_dev ON rr_dev.id = source_rr.developer_id
-         LEFT JOIN developers login_dev ON login_dev.organization_id = pr.organization_id AND login_dev.github_login = pr.author_login
          LEFT JOIN LATERAL (
            SELECT quality_score, risk_level, gate_decision
            FROM review_runs
@@ -128,8 +128,7 @@ export class PullRequestsService {
          ORDER BY pr.created_at DESC`,
         [repositoryId],
       );
-      const visible = actor.role === 'admin' ? rows : rows.filter((r) => r.owner_user_id === actor.userId);
-      return visible.map(({ owner_user_id, ...rest }) => rest);
+      return rows;
     });
   }
 
@@ -137,9 +136,8 @@ export class PullRequestsService {
     return withTenant(orgId, async (client) => {
       const pr = await this.loadWithOwnership(client, pullRequestId);
       if (!pr) throw new NotFoundException('pull request not found');
-      this.assertCanView(pr, actor);
-      const { owner_user_id, ...rest } = pr;
-      return rest;
+      await this.assertCanView(client, pr, actor);
+      return pr;
     });
   }
 
@@ -147,7 +145,7 @@ export class PullRequestsService {
     const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { installationId, owner, repo, pr } = await this.loadGithubRef(client, pullRequestId);
-      this.assertCanView(pr, actor);
+      await this.assertCanView(client, pr, actor);
       return adapter.getPullRequestStatus({ installationId, owner, repo, pullNumber: pr.github_pr_number });
     });
   }
@@ -156,7 +154,7 @@ export class PullRequestsService {
     return withTenant(orgId, async (client) => {
       const pr = await this.loadWithOwnership(client, pullRequestId);
       if (!pr) throw new NotFoundException('pull request not found');
-      this.assertCanView(pr, actor);
+      await this.assertCanView(client, pr, actor);
 
       const { rows: runRows } = await client.query(
         `SELECT * FROM review_runs
@@ -230,20 +228,8 @@ export class PullRequestsService {
     });
   }
 
-  private ownerUserIdSelect(): string {
-    return 'COALESCE(rr_dev.user_id, login_dev.user_id) AS owner_user_id';
-  }
-
   private async loadWithOwnership(client: PoolClient, pullRequestId: string): Promise<any | null> {
-    const { rows } = await client.query(
-      `SELECT pr.*, ${this.ownerUserIdSelect()}
-       FROM pull_requests pr
-       LEFT JOIN review_runs rr ON rr.id = pr.source_review_run_id
-       LEFT JOIN developers rr_dev ON rr_dev.id = rr.developer_id
-       LEFT JOIN developers login_dev ON login_dev.organization_id = pr.organization_id AND login_dev.github_login = pr.author_login
-       WHERE pr.id = $1`,
-      [pullRequestId],
-    );
+    const { rows } = await client.query('SELECT * FROM pull_requests WHERE id = $1', [pullRequestId]);
     return rows[0] ?? null;
   }
 
@@ -262,9 +248,19 @@ export class PullRequestsService {
     return { installationId: Number(repoRow.installation_id), owner, repo, pr };
   }
 
-  private assertCanView(pr: { owner_user_id: string | null }, actor: Actor): void {
+  private async isRepoMember(client: PoolClient, repositoryId: string, userId: string): Promise<boolean> {
+    const { rows } = await client.query(
+      'SELECT 1 FROM repository_members WHERE repository_id = $1 AND user_id = $2',
+      [repositoryId, userId],
+    );
+    return rows.length > 0;
+  }
+
+  /** admin ve cualquier PR de la org; un usuario ("user") solo los de un repo que
+   * tenga asignado en repository_members (mismo criterio que review_runs). */
+  private async assertCanView(client: PoolClient, pr: { repository_id: string }, actor: Actor): Promise<void> {
     if (actor.role === 'admin') return;
-    if (pr.owner_user_id && pr.owner_user_id === actor.userId) return;
-    throw new ForbiddenException('no tienes acceso a este pull request');
+    const allowed = await this.isRepoMember(client, pr.repository_id, actor.userId);
+    if (!allowed) throw new ForbiddenException('no tienes acceso a este pull request');
   }
 }

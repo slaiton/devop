@@ -22,3 +22,12 @@ export interface ReconsiderJobPayload {
   comment: string;
   requestedBy: string;
 }
+
+export const ISSUE_REPLY_SUGGESTION_QUEUE_NAME = 'issue-reply-suggestion-jobs';
+
+export interface IssueReplySuggestionJobPayload {
+  issueId: string;
+  organizationId: string;
+  repositoryId: string;
+  requestedBy: string;
+}

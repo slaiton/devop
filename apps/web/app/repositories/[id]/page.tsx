@@ -5,6 +5,9 @@ import { NotifyButton } from './NotifyButton';
 import { ProjectProfileForm } from './ProjectProfileForm';
 import { CreatePullRequestButton, MergePullRequestButton } from './PullRequestActions';
 import { MarkReviewedButton } from './MarkReviewedButton';
+import { RepoMembersForm } from './RepoMembersForm';
+import { CreateIssueButton } from './CreateIssueButton';
+import { SyncIssuesButton } from './SyncIssuesButton';
 import { GateBadge } from '../../GateBadge';
 import { getSession } from '../../session';
 
@@ -45,6 +48,33 @@ interface PullRequestRow {
   gate_decision: 'apto' | 'requiere_revision' | 'no_apto' | null;
 }
 
+interface RepoMemberRow {
+  user_id: string;
+  name: string | null;
+  email: string | null;
+  avatar_url: string | null;
+}
+
+interface TeamMemberRow {
+  role: string;
+  user_id: string;
+  name: string | null;
+  email: string | null;
+}
+
+interface IssueRow {
+  id: string;
+  github_issue_number: number;
+  pull_request_id: string | null;
+  branch: string | null;
+  kind: 'findings' | 'manual';
+  origin: 'github' | 'devsentinel';
+  title: string;
+  state: 'open' | 'closed';
+  author_login: string | null;
+  updated_at: string;
+}
+
 interface ProjectProfileRow {
   language: string | null;
   framework: string | null;
@@ -78,7 +108,7 @@ async function fetchJson<T>(path: string): Promise<T> {
 
 export default async function RepositoryPullRequestsPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
-  if (!session || session.role !== 'admin') {
+  if (!session) {
     return (
       <main>
         <p>No autorizado.</p>
@@ -86,15 +116,48 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
     );
   }
 
+  const isAdmin = session.role === 'admin';
   const { id } = await params;
-  const [pushes, settings, projectProfile, pullRequests] = await Promise.all([
-    fetchJson<PushRow[]>(`/dashboard/repositories/${id}/pushes`),
-    fetchJson<RepoSettings>(`/dashboard/repositories/${id}/settings`),
-    fetchJson<ProjectProfileRow>(`/dashboard/repositories/${id}/project-profile`),
-    fetchJson<PullRequestRow[]>(`/pull-requests/repository/${id}`),
-  ]);
+
+  let pushes: PushRow[];
+  let pullRequests: PullRequestRow[];
+  let issues: IssueRow[];
+  let settings: RepoSettings | null = null;
+  let projectProfile: ProjectProfileRow | null = null;
+  let members: RepoMemberRow[] = [];
+  let teamMembers: TeamMemberRow[] = [];
+
+  try {
+    if (isAdmin) {
+      [pushes, settings, projectProfile, pullRequests, issues, members, teamMembers] = await Promise.all([
+        fetchJson<PushRow[]>(`/dashboard/repositories/${id}/pushes`),
+        fetchJson<RepoSettings>(`/dashboard/repositories/${id}/settings`),
+        fetchJson<ProjectProfileRow>(`/dashboard/repositories/${id}/project-profile`),
+        fetchJson<PullRequestRow[]>(`/pull-requests/repository/${id}`),
+        fetchJson<IssueRow[]>(`/issues/repository/${id}`),
+        fetchJson<RepoMemberRow[]>(`/dashboard/repositories/${id}/members`),
+        fetchJson<TeamMemberRow[]>(`/dashboard/team`),
+      ]);
+    } else {
+      [pushes, pullRequests, issues] = await Promise.all([
+        fetchJson<PushRow[]>(`/dashboard/repositories/${id}/pushes`),
+        fetchJson<PullRequestRow[]>(`/pull-requests/repository/${id}`),
+        fetchJson<IssueRow[]>(`/issues/repository/${id}`),
+      ]);
+    }
+  } catch {
+    return (
+      <main>
+        <p>
+          <Link href="/">&larr; Repositorios</Link>
+        </p>
+        <p>No tienes acceso a este repositorio.</p>
+      </main>
+    );
+  }
 
   const reviewRunsWithPr = new Set(pullRequests.map((pr) => pr.source_review_run_id).filter(Boolean));
+  const assignableTeamMembers = teamMembers.filter((m) => !members.some((rm) => rm.user_id === m.user_id));
 
   return (
     <main>
@@ -133,7 +196,7 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
                 <td>{pr.quality_score ?? '-'}</td>
                 <td>{pr.risk_level ? <span className={`badge badge-${pr.risk_level}`}>{pr.risk_level}</span> : '-'}</td>
                 <td>{pr.status === 'open' ? <GateBadge decision={pr.gate_decision} /> : pr.status}</td>
-                <td>{pr.status === 'open' && <MergePullRequestButton pullRequestId={pr.id} />}</td>
+                <td>{isAdmin && pr.status === 'open' && <MergePullRequestButton pullRequestId={pr.id} />}</td>
               </tr>
             ))}
           </tbody>
@@ -169,48 +232,108 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
               {run.reviewed_at ? (
                 <p className="status-ok">✓ Revisado el {new Date(run.reviewed_at).toLocaleString()}</p>
               ) : (
-                <div className="card-row">
-                  {run.author_email && !run.notified_at && (
-                    <NotifyButton repositoryId={id} reviewRunId={run.id} authorEmail={run.author_email} />
-                  )}
-                  {isEligibleForPullRequest(run) && !reviewRunsWithPr.has(run.id) && (
-                    <CreatePullRequestButton repositoryId={id} reviewRunId={run.id} />
-                  )}
-                  <MarkReviewedButton repositoryId={id} reviewRunId={run.id} />
-                </div>
+                isAdmin && (
+                  <div className="card-row">
+                    {run.author_email && !run.notified_at && (
+                      <NotifyButton repositoryId={id} reviewRunId={run.id} authorEmail={run.author_email} />
+                    )}
+                    {isEligibleForPullRequest(run) && !reviewRunsWithPr.has(run.id) && (
+                      <CreatePullRequestButton repositoryId={id} reviewRunId={run.id} />
+                    )}
+                    <MarkReviewedButton repositoryId={id} reviewRunId={run.id} />
+                    {run.gate_decision === 'no_apto' && <CreateIssueButton repositoryId={id} reviewRunId={run.id} />}
+                  </div>
+                )
               )}
             </div>
           ))}
         </div>
       )}
 
-      <h1>Perfil del proyecto</h1>
-      <ProjectProfileForm
-        repositoryId={id}
-        initial={{
-          language: projectProfile.language ?? '',
-          framework: projectProfile.framework ?? '',
-          frameworkVersion: projectProfile.framework_version ?? '',
-          runtime: projectProfile.runtime ?? '',
-          database: projectProfile.database ?? '',
-          architectureStyle: projectProfile.architecture_style ?? '',
-          testingStrategy: projectProfile.testing_strategy ?? '',
-          migrationsPolicy: projectProfile.migrations_policy ?? '',
-          compatibilityNotes: projectProfile.compatibility_notes ?? '',
-          notes: projectProfile.notes ?? '',
-          mandatoryRules: (projectProfile.mandatory_rules ?? []).join('\n'),
-          securityRules: (projectProfile.security_rules ?? []).join('\n'),
-          conventions: (projectProfile.conventions ?? []).join('\n'),
-        }}
-      />
+      <h1>Issues</h1>
+      {isAdmin && <SyncIssuesButton repositoryId={id} />}
+      {issues.length === 0 ? (
+        <p>Todavía no hay issues sincronizados de este repositorio.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Título</th>
+              <th>Origen</th>
+              <th>Estado</th>
+              <th>Actualizado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {issues.map((issue) => (
+              <tr key={issue.id}>
+                <td>{issue.github_issue_number}</td>
+                <td>
+                  <Link href={`/repositories/${id}/issues/${issue.id}`}>{issue.title}</Link>
+                </td>
+                <td>{issue.origin === 'devsentinel' ? 'DevSentinel' : 'GitHub'}</td>
+                <td>
+                  <span className={issue.state === 'open' ? 'status-ok' : 'status-bad'}>
+                    {issue.state === 'open' ? 'Abierto' : 'Cerrado'}
+                  </span>
+                </td>
+                <td>{new Date(issue.updated_at).toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
-      <h1>Configuración</h1>
-      <RepoSettingsForm
-        repositoryId={id}
-        promotionSourceBranch={settings.promotion_source_branch}
-        promotionTargetBranch={settings.promotion_target_branch}
-        autoCreatePrOnPush={settings.auto_create_pr_on_push}
-      />
+      {isAdmin && projectProfile && (
+        <>
+          <h1>Perfil del proyecto</h1>
+          <ProjectProfileForm
+            repositoryId={id}
+            initial={{
+              language: projectProfile.language ?? '',
+              framework: projectProfile.framework ?? '',
+              frameworkVersion: projectProfile.framework_version ?? '',
+              runtime: projectProfile.runtime ?? '',
+              database: projectProfile.database ?? '',
+              architectureStyle: projectProfile.architecture_style ?? '',
+              testingStrategy: projectProfile.testing_strategy ?? '',
+              migrationsPolicy: projectProfile.migrations_policy ?? '',
+              compatibilityNotes: projectProfile.compatibility_notes ?? '',
+              notes: projectProfile.notes ?? '',
+              mandatoryRules: (projectProfile.mandatory_rules ?? []).join('\n'),
+              securityRules: (projectProfile.security_rules ?? []).join('\n'),
+              conventions: (projectProfile.conventions ?? []).join('\n'),
+            }}
+          />
+        </>
+      )}
+
+      {isAdmin && settings && (
+        <>
+          <h1>Configuración</h1>
+          <RepoSettingsForm
+            repositoryId={id}
+            promotionSourceBranch={settings.promotion_source_branch}
+            promotionTargetBranch={settings.promotion_target_branch}
+            autoCreatePrOnPush={settings.auto_create_pr_on_push}
+          />
+        </>
+      )}
+
+      {isAdmin && (
+        <>
+          <h1>Acceso</h1>
+          <p style={{ color: 'var(--text-muted)' }}>
+            Usuarios con rol &quot;usuario&quot; solo ven los repositorios que tienen asignados aquí, con todos sus commits.
+          </p>
+          <RepoMembersForm
+            repositoryId={id}
+            members={members.map((m) => ({ userId: m.user_id, name: m.name, email: m.email }))}
+            candidates={assignableTeamMembers.map((m) => ({ userId: m.user_id, name: m.name, email: m.email }))}
+          />
+        </>
+      )}
     </main>
   );
 }

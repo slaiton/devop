@@ -6,6 +6,7 @@ COPY apps/api/package.json apps/api/
 COPY libs/shared/database/package.json libs/shared/database/
 COPY libs/shared/event-contracts/package.json libs/shared/event-contracts/
 COPY libs/shared/pr-content/package.json libs/shared/pr-content/
+COPY libs/shared/issue-content/package.json libs/shared/issue-content/
 COPY libs/shared/settings/package.json libs/shared/settings/
 COPY libs/domain/git-providers/package.json libs/domain/git-providers/
 RUN npm install
@@ -15,6 +16,7 @@ COPY apps/api apps/api
 COPY libs/shared/database libs/shared/database
 COPY libs/shared/event-contracts libs/shared/event-contracts
 COPY libs/shared/pr-content libs/shared/pr-content
+COPY libs/shared/issue-content libs/shared/issue-content
 COPY libs/shared/settings libs/shared/settings
 COPY libs/domain/git-providers libs/domain/git-providers
 RUN npm run build --workspace=@devsentinel/database \
@@ -22,6 +24,7 @@ RUN npm run build --workspace=@devsentinel/database \
  && npm run build --workspace=@devsentinel/pr-content \
  && npm run build --workspace=@devsentinel/settings \
  && npm run build --workspace=@devsentinel/git-providers \
+ && npm run build --workspace=@devsentinel/issue-content \
  && npm run build --workspace=@devsentinel/api
 
 FROM node:20-alpine AS runtime

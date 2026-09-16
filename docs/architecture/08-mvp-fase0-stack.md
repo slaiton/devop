@@ -69,8 +69,9 @@ Todo lo que NO aparece en esta tabla (modelo de datos, catálogo de eventos, `Gi
 
 **Un único GitHub App** (no OAuth App separada) cubre instalación y login:
 
-- **Permisos de repositorio:** `Contents: Read`, `Pull requests: Read & Write`, `Checks: Read & Write`, `Metadata: Read`.
-- **Eventos de webhook suscritos:** `push`, `pull_request`, `installation`, `installation_repositories`.
+- **Permisos de repositorio:** `Contents: Read`, `Pull requests: Read & Write`, `Checks: Read & Write`, `Issues: Read & Write`, `Metadata: Read`.
+- **Eventos de webhook suscritos:** `push`, `pull_request`, `installation`, `installation_repositories`, `issues`, `issue_comment`.
+- **Nota operativa (permiso `Issues` agregado tras el MVP inicial):** agregar un permiso nuevo a una GitHub App ya instalada NO se aplica solo — cada organización con la App instalada debe re-aceptarlo desde `github.com/organizations/<org>/settings/installations` (o el equivalente de cuenta personal) antes de que los webhooks `issues`/`issue_comment` empiecen a llegar y de que las llamadas `issues.create`/`issues.update` dejen de fallar con 403. Avisar a las instalaciones existentes al desplegar este cambio.
 - **Login:** flujo OAuth de usuario a servidor nativo de GitHub Apps ("Sign in with GitHub App") — el mismo App que da acceso a los repos autentica al usuario; no se registra una OAuth App adicional.
 - **Tokens de instalación:** de corta duración, renovados automáticamente por el módulo `github-integration` del `api`; cifrados en reposo (ver [05](05-seguridad-multitenancy-escalabilidad.md), aplicable también al MVP aunque sea una sola tabla con `pgcrypto` en vez de Vault).
 
