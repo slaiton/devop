@@ -180,7 +180,10 @@ export class AuthService {
     });
   }
 
+  /** Sesión corta a propósito: al expirar, `JwtAuthGuard` rechaza el token (401) y el
+   * front trata eso como "no logueado" — la única forma de recuperar sesión es volver
+   * a pasar por GitHub OAuth (y por `resolveRegisteredUser`), sin refresh silencioso. */
   issueSessionToken(userId: string, organizationId: string): string {
-    return sign({ sub: userId, orgId: organizationId }, process.env.JWT_SECRET ?? '', { expiresIn: '7d' });
+    return sign({ sub: userId, orgId: organizationId }, process.env.JWT_SECRET ?? '', { expiresIn: '4h' });
   }
 }

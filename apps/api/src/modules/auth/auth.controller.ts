@@ -113,7 +113,7 @@ export class AuthController {
       httpOnly: true,
       sameSite: 'lax',
       secure: COOKIES_REQUIRE_HTTPS,
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: 4 * 60 * 60 * 1000, // igual al expiresIn del JWT (issueSessionToken)
     });
     res.redirect(process.env.PUBLIC_WEB_ORIGIN ?? '/');
   }
