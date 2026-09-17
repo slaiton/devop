@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Controller, ForbiddenException, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { randomBytes } from 'crypto';
 import { verify } from 'jsonwebtoken';
@@ -75,21 +75,34 @@ export class AuthController {
     } catch (err) {
       throw new BadRequestException((err as Error).message);
     }
-    const userId = await this.authService.upsertUser(githubUser);
 
-    // Camino 1: es quien instaló la GitHub App (su login coincide con el slug de la
-    // org) → admin. Camino 2: ya es miembro por invitación previa, aunque su login no
-    // coincida con ningún slug. Si ninguno aplica, no tiene organización todavía.
-    let organizationId = await this.authService.findOrganizationForLogin(githubUser.login);
-    if (organizationId) {
-      await this.authService.ensureMembership(organizationId, userId);
-    } else {
+    let userId: string;
+    try {
+      userId = await this.authService.resolveRegisteredUser(githubUser);
+    } catch (err) {
+      if (err instanceof ForbiddenException) {
+        res.redirect(`${process.env.PUBLIC_WEB_ORIGIN ?? ''}/?login_error=${encodeURIComponent(err.message)}`);
+        return;
+      }
+      throw err;
+    }
+
+    // Camino 1: viene de instalar la App en una cuenta cuya organización todavía no
+    // tiene ningún admin (organización nueva) → se vuelve admin. Camino 2: ya es
+    // miembro (se registró desde /users, o es el primer admin de /setup). Si ninguno
+    // aplica, no está registrado en ninguna organización.
+    let organizationId: string | null = null;
+    if (isInstallSetup && installationId) {
+      organizationId = await this.authService.bootstrapFirstAdminForInstallation(Number(installationId), userId);
+    }
+    if (!organizationId) {
       organizationId = await this.authService.findOrganizationForUser(userId);
     }
 
     if (!organizationId) {
-      const appSlug = await this.authService.getAppSlug();
-      res.redirect(`https://github.com/apps/${appSlug}/installations/new`);
+      res.redirect(
+        `${process.env.PUBLIC_WEB_ORIGIN ?? ''}/?login_error=${encodeURIComponent('tu usuario no tiene una organización asignada — contacta a un administrador')}`,
+      );
       return;
     }
 

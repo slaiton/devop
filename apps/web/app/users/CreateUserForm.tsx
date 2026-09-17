@@ -3,9 +3,11 @@
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
-export function InviteForm() {
+export function CreateUserForm() {
   const router = useRouter();
-  const [githubLogin, setGithubLogin] = useState('');
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<'admin' | 'user'>('user');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -14,16 +16,18 @@ export function InviteForm() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/dashboard/team/invite', {
+      const res = await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ githubLogin }),
+        body: JSON.stringify({ email: email.trim(), name: name.trim() || undefined, role }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.message ?? `error ${res.status}`);
       }
-      setGithubLogin('');
+      setEmail('');
+      setName('');
+      setRole('user');
       router.refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -36,12 +40,25 @@ export function InviteForm() {
     <form onSubmit={handleSubmit}>
       <p>
         <label>
-          Username de GitHub a invitar (rol: usuario):
-          <input value={githubLogin} onChange={(e) => setGithubLogin(e.target.value)} placeholder="octocat" required />
+          Correo: <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+        </label>
+      </p>
+      <p>
+        <label>
+          Nombre (opcional): <input value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+      </p>
+      <p>
+        <label>
+          Rol:{' '}
+          <select value={role} onChange={(e) => setRole(e.target.value as 'admin' | 'user')}>
+            <option value="user">Usuario</option>
+            <option value="admin">Admin</option>
+          </select>
         </label>
       </p>
       <button type="submit" disabled={loading}>
-        {loading ? 'Invitando…' : 'Invitar'}
+        {loading ? 'Registrando…' : 'Registrar usuario'}
       </button>
       {error && <p className="error-text">{error}</p>}
     </form>

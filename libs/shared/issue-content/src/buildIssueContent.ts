@@ -19,7 +19,8 @@ export interface BuildIssueContentInput {
   repositoryFullName: string;
   pullRequestNumber: number | null;
   branch: string;
-  commitSha: string;
+  firstCommitSha: string;
+  lastCommitSha: string;
   reviewRun: IssueContentReviewRun;
   blockingFindings: IssueContentFinding[];
   reviewRunId: string;
@@ -40,16 +41,28 @@ export function parseReviewRunIdFromIssueBody(body: string | null | undefined): 
   return match ? match[1] : null;
 }
 
+/** Link en Markdown a un commit — no requiere llamar a la API de GitHub, la URL de un
+ * commit es determinística a partir del nombre del repo y el SHA. */
+export function commitLinkMd(repositoryFullName: string, commitSha: string): string {
+  const shortSha = commitSha.slice(0, 7);
+  return `[\`${shortSha}\`](https://github.com/${repositoryFullName}/commit/${commitSha})`;
+}
+
 /** Genera título y descripción del issue de hallazgos bloqueantes de un PR/branch a
  * partir de un análisis ya existente (no vuelve a llamar al LLM) — mismo criterio que
  * `buildPullRequestContent` en `@devsentinel/pr-content`, pero solo con los findings
- * `blocking` vigentes (el llamador ya filtró por `status = 'open' AND blocking = true`). */
+ * `blocking` vigentes (el llamador ya filtró por `status = 'open' AND blocking = true`).
+ *
+ * El título es ESTABLE (no incluye el commit): si cambiara en cada push, GitHub
+ * registraría un evento "renamed this issue" en cada sincronización, ensuciando el
+ * historial. El commit inicial (que originó el issue) y el último analizado van en el
+ * body, que sí se espera que cambie. */
 export function buildIssueContent(input: BuildIssueContentInput): { title: string; body: string } {
-  const { repositoryFullName, pullRequestNumber, branch, commitSha, reviewRun, blockingFindings, reviewRunId } = input;
-  const shortSha = commitSha.slice(0, 7);
+  const { repositoryFullName, pullRequestNumber, branch, firstCommitSha, lastCommitSha, reviewRun, blockingFindings, reviewRunId } =
+    input;
   const target = pullRequestNumber ? `PR #${pullRequestNumber}` : `\`${branch}\``;
 
-  const title = `[DevSentinel AI] Hallazgos bloqueantes en ${target} @ ${shortSha}`;
+  const title = `[DevSentinel AI] Hallazgos bloqueantes en ${target}`;
 
   const sorted = [...blockingFindings].sort(
     (a, b) => (SEVERITY_ORDER[b.severity] ?? 0) - (SEVERITY_ORDER[a.severity] ?? 0),
@@ -63,8 +76,15 @@ export function buildIssueContent(input: BuildIssueContentInput): { title: strin
         .join('\n')
     : '_Sin hallazgos bloqueantes vigentes._';
 
+  const commitLine =
+    firstCommitSha === lastCommitSha
+      ? `**Detectado en:** ${commitLinkMd(repositoryFullName, firstCommitSha)}`
+      : `**Detectado por primera vez en:** ${commitLinkMd(repositoryFullName, firstCommitSha)} — **último análisis:** ${commitLinkMd(repositoryFullName, lastCommitSha)}`;
+
   const body = [
-    `### DevSentinel AI — hallazgos bloqueantes en \`${repositoryFullName}@${shortSha}\``,
+    `### DevSentinel AI — hallazgos bloqueantes en \`${repositoryFullName}\` (${target})`,
+    '',
+    commitLine,
     '',
     `**Score:** ${reviewRun.quality_score ?? '-'}/100 — **Riesgo:** ${reviewRun.risk_level ?? '-'}`,
     '',

@@ -1,11 +1,10 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
 import { RolesGuard } from '../../common/roles.guard';
 import { Roles } from '../../common/roles.decorator';
 import { CurrentOrg } from '../../common/currentOrg.decorator';
 import { CurrentUser } from '../../common/currentUser.decorator';
 import { CurrentRole } from '../../common/currentRole.decorator';
-import { AuthService } from '../auth/auth.service';
 import { DashboardService } from './dashboard.service';
 
 interface UpdateRepositorySettingsBody {
@@ -33,10 +32,7 @@ interface UpdateProjectProfileBody {
 @Controller('dashboard')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class DashboardController {
-  constructor(
-    private readonly dashboardService: DashboardService,
-    private readonly authService: AuthService,
-  ) {}
+  constructor(private readonly dashboardService: DashboardService) {}
 
   // ---- Vista personal ("usuario") — sin @Roles, abierta a admin y user ----
 
@@ -71,25 +67,22 @@ export class DashboardController {
     return { diff };
   }
 
-  // ---- Gestión de equipo (solo admin) ----
-
-  @Get('team')
-  @Roles('admin')
-  listTeam(@CurrentOrg() orgId: string) {
-    return this.dashboardService.listTeam(orgId);
-  }
-
-  @Post('team/invite')
-  @Roles('admin')
-  inviteTeamMember(@CurrentOrg() orgId: string, @Body() body: { githubLogin: string }) {
-    return this.authService.inviteUser(orgId, body.githubLogin);
-  }
-
   // ---- Repos: lectura abierta a admin y a "user" con el repo asignado ----
 
   @Get('repositories')
   listRepositories(@CurrentOrg() orgId: string, @CurrentUser() userId: string, @CurrentRole() role: string) {
     return this.dashboardService.listRepositories(orgId, { userId, role });
+  }
+
+  @Get('repositories/:repositoryId')
+  async getRepository(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @CurrentRole() role: string,
+    @Param('repositoryId') repositoryId: string,
+  ) {
+    await this.dashboardService.assertRepoAccess(orgId, repositoryId, { userId, role });
+    return this.dashboardService.getRepository(orgId, repositoryId);
   }
 
   @Get('repositories/:repositoryId/settings')
@@ -120,37 +113,13 @@ export class DashboardController {
     @CurrentUser() userId: string,
     @CurrentRole() role: string,
     @Param('repositoryId') repositoryId: string,
+    @Query('page') pageParam: string | undefined,
+    @Query('pageSize') pageSizeParam: string | undefined,
   ) {
     await this.dashboardService.assertRepoAccess(orgId, repositoryId, { userId, role });
-    return this.dashboardService.listPushes(orgId, repositoryId);
-  }
-
-  // ---- Acceso a repos por usuario (solo admin) ----
-
-  @Get('repositories/:repositoryId/members')
-  @Roles('admin')
-  listRepositoryMembers(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
-    return this.dashboardService.listRepositoryMembers(orgId, repositoryId);
-  }
-
-  @Post('repositories/:repositoryId/members')
-  @Roles('admin')
-  addRepositoryMember(
-    @CurrentOrg() orgId: string,
-    @Param('repositoryId') repositoryId: string,
-    @Body() body: { userId: string },
-  ) {
-    return this.dashboardService.addRepositoryMember(orgId, repositoryId, body.userId);
-  }
-
-  @Delete('repositories/:repositoryId/members/:userId')
-  @Roles('admin')
-  removeRepositoryMember(
-    @CurrentOrg() orgId: string,
-    @Param('repositoryId') repositoryId: string,
-    @Param('userId') userId: string,
-  ) {
-    return this.dashboardService.removeRepositoryMember(orgId, repositoryId, userId);
+    const page = Math.max(1, Number(pageParam) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(pageSizeParam) || 20));
+    return this.dashboardService.listPushes(orgId, repositoryId, page, pageSize);
   }
 
   // ---- Todo lo demás es gestión de repos/organización — solo admin ----

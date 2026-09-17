@@ -1,13 +1,9 @@
 import { cookies } from 'next/headers';
 import Link from 'next/link';
-import { RepoSettingsForm } from './RepoSettingsForm';
 import { NotifyButton } from './NotifyButton';
-import { ProjectProfileForm } from './ProjectProfileForm';
-import { CreatePullRequestButton, MergePullRequestButton } from './PullRequestActions';
+import { CreatePullRequestButton } from './PullRequestActions';
 import { MarkReviewedButton } from './MarkReviewedButton';
-import { RepoMembersForm } from './RepoMembersForm';
 import { CreateIssueButton } from './CreateIssueButton';
-import { SyncIssuesButton } from './SyncIssuesButton';
 import { GateBadge } from '../../GateBadge';
 import { getSession } from '../../session';
 
@@ -27,68 +23,11 @@ interface PushRow {
   started_at: string;
 }
 
-interface RepoSettings {
-  promotion_source_branch: string;
-  promotion_target_branch: string;
-  auto_create_pr_on_push: boolean;
-}
-
-interface PullRequestRow {
-  id: string;
-  github_pr_number: number;
-  title: string;
-  author_login: string;
-  source_branch: string;
-  target_branch: string;
-  status: 'open' | 'merged' | 'closed';
-  created_by: 'github' | 'devsentinel';
-  source_review_run_id: string | null;
-  quality_score: number | null;
-  risk_level: 'low' | 'medium' | 'high' | null;
-  gate_decision: 'apto' | 'requiere_revision' | 'no_apto' | null;
-}
-
-interface RepoMemberRow {
-  user_id: string;
-  name: string | null;
-  email: string | null;
-  avatar_url: string | null;
-}
-
-interface TeamMemberRow {
-  role: string;
-  user_id: string;
-  name: string | null;
-  email: string | null;
-}
-
-interface IssueRow {
-  id: string;
-  github_issue_number: number;
-  pull_request_id: string | null;
-  branch: string | null;
-  kind: 'findings' | 'manual';
-  origin: 'github' | 'devsentinel';
-  title: string;
-  state: 'open' | 'closed';
-  author_login: string | null;
-  updated_at: string;
-}
-
-interface ProjectProfileRow {
-  language: string | null;
-  framework: string | null;
-  framework_version: string | null;
-  runtime: string | null;
-  database: string | null;
-  architecture_style: string | null;
-  testing_strategy: string | null;
-  notes: string | null;
-  mandatory_rules: string[];
-  security_rules: string[];
-  conventions: string[];
-  migrations_policy: string | null;
-  compatibility_notes: string | null;
+interface PushesPage {
+  items: PushRow[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 function isEligibleForPullRequest(run: Pick<PushRow, 'gate_decision' | 'risk_level' | 'quality_score'>): boolean {
@@ -106,104 +45,31 @@ async function fetchJson<T>(path: string): Promise<T> {
   return res.json();
 }
 
-export default async function RepositoryPullRequestsPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function RepositoryPushesTab({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ page?: string }>;
+}) {
   const session = await getSession();
-  if (!session) {
-    return (
-      <main>
-        <p>No autorizado.</p>
-      </main>
-    );
-  }
-
-  const isAdmin = session.role === 'admin';
+  const isAdmin = session?.role === 'admin';
   const { id } = await params;
+  const { page: pageParam } = await searchParams;
+  const page = Math.max(1, Number(pageParam) || 1);
 
-  let pushes: PushRow[];
-  let pullRequests: PullRequestRow[];
-  let issues: IssueRow[];
-  let settings: RepoSettings | null = null;
-  let projectProfile: ProjectProfileRow | null = null;
-  let members: RepoMemberRow[] = [];
-  let teamMembers: TeamMemberRow[] = [];
-
+  let pushesPage: PushesPage;
   try {
-    if (isAdmin) {
-      [pushes, settings, projectProfile, pullRequests, issues, members, teamMembers] = await Promise.all([
-        fetchJson<PushRow[]>(`/dashboard/repositories/${id}/pushes`),
-        fetchJson<RepoSettings>(`/dashboard/repositories/${id}/settings`),
-        fetchJson<ProjectProfileRow>(`/dashboard/repositories/${id}/project-profile`),
-        fetchJson<PullRequestRow[]>(`/pull-requests/repository/${id}`),
-        fetchJson<IssueRow[]>(`/issues/repository/${id}`),
-        fetchJson<RepoMemberRow[]>(`/dashboard/repositories/${id}/members`),
-        fetchJson<TeamMemberRow[]>(`/dashboard/team`),
-      ]);
-    } else {
-      [pushes, pullRequests, issues] = await Promise.all([
-        fetchJson<PushRow[]>(`/dashboard/repositories/${id}/pushes`),
-        fetchJson<PullRequestRow[]>(`/pull-requests/repository/${id}`),
-        fetchJson<IssueRow[]>(`/issues/repository/${id}`),
-      ]);
-    }
+    pushesPage = await fetchJson<PushesPage>(`/dashboard/repositories/${id}/pushes?page=${page}&pageSize=20`);
   } catch {
-    return (
-      <main>
-        <p>
-          <Link href="/">&larr; Repositorios</Link>
-        </p>
-        <p>No tienes acceso a este repositorio.</p>
-      </main>
-    );
+    return <p>No se pudieron cargar los pushes de este repositorio.</p>;
   }
 
-  const reviewRunsWithPr = new Set(pullRequests.map((pr) => pr.source_review_run_id).filter(Boolean));
-  const assignableTeamMembers = teamMembers.filter((m) => !members.some((rm) => rm.user_id === m.user_id));
+  const { items: pushes, total, pageSize } = pushesPage;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
-    <main>
-      <p>
-        <Link href="/">&larr; Repositorios</Link>
-      </p>
-
-      <h1>Pull requests</h1>
-      {pullRequests.length === 0 ? (
-        <p>Todavía no hay Pull Requests para este repositorio.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Título</th>
-              <th>Autor</th>
-              <th>Rama</th>
-              <th>Origen</th>
-              <th>Score</th>
-              <th>Riesgo</th>
-              <th>Estado</th>
-              <th>Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pullRequests.map((pr) => (
-              <tr key={pr.id}>
-                <td>{pr.github_pr_number}</td>
-                <td>
-                  {pr.source_review_run_id ? <Link href={`/review-runs/${pr.source_review_run_id}`}>{pr.title}</Link> : pr.title}
-                </td>
-                <td>{pr.author_login}</td>
-                <td>{pr.source_branch} → {pr.target_branch}</td>
-                <td>{pr.created_by === 'devsentinel' ? 'DevSentinel' : 'GitHub'}</td>
-                <td>{pr.quality_score ?? '-'}</td>
-                <td>{pr.risk_level ? <span className={`badge badge-${pr.risk_level}`}>{pr.risk_level}</span> : '-'}</td>
-                <td>{pr.status === 'open' ? <GateBadge decision={pr.gate_decision} /> : pr.status}</td>
-                <td>{isAdmin && pr.status === 'open' && <MergePullRequestButton pullRequestId={pr.id} />}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <h1>Pushes</h1>
+    <>
       {pushes.length === 0 ? (
         <p>Todavía no hay pushes analizados en las ramas monitoreadas.</p>
       ) : (
@@ -237,9 +103,7 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
                     {run.author_email && !run.notified_at && (
                       <NotifyButton repositoryId={id} reviewRunId={run.id} authorEmail={run.author_email} />
                     )}
-                    {isEligibleForPullRequest(run) && !reviewRunsWithPr.has(run.id) && (
-                      <CreatePullRequestButton repositoryId={id} reviewRunId={run.id} />
-                    )}
+                    {isEligibleForPullRequest(run) && <CreatePullRequestButton repositoryId={id} reviewRunId={run.id} />}
                     <MarkReviewedButton repositoryId={id} reviewRunId={run.id} />
                     {run.gate_decision === 'no_apto' && <CreateIssueButton repositoryId={id} reviewRunId={run.id} />}
                   </div>
@@ -250,90 +114,19 @@ export default async function RepositoryPullRequestsPage({ params }: { params: P
         </div>
       )}
 
-      <h1>Issues</h1>
-      {isAdmin && <SyncIssuesButton repositoryId={id} />}
-      {issues.length === 0 ? (
-        <p>Todavía no hay issues sincronizados de este repositorio.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Título</th>
-              <th>Origen</th>
-              <th>Estado</th>
-              <th>Actualizado</th>
-            </tr>
-          </thead>
-          <tbody>
-            {issues.map((issue) => (
-              <tr key={issue.id}>
-                <td>{issue.github_issue_number}</td>
-                <td>
-                  <Link href={`/repositories/${id}/issues/${issue.id}`}>{issue.title}</Link>
-                </td>
-                <td>{issue.origin === 'devsentinel' ? 'DevSentinel' : 'GitHub'}</td>
-                <td>
-                  <span className={issue.state === 'open' ? 'status-ok' : 'status-bad'}>
-                    {issue.state === 'open' ? 'Abierto' : 'Cerrado'}
-                  </span>
-                </td>
-                <td>{new Date(issue.updated_at).toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {totalPages > 1 && (
+        <div className="pagination">
+          {page > 1 ? <Link href={`/repositories/${id}?page=${page - 1}`}>&larr; Anterior</Link> : <span>&larr; Anterior</span>}
+          <span>
+            Página {page} de {totalPages} ({total} pushes)
+          </span>
+          {page < totalPages ? (
+            <Link href={`/repositories/${id}?page=${page + 1}`}>Siguiente &rarr;</Link>
+          ) : (
+            <span>Siguiente &rarr;</span>
+          )}
+        </div>
       )}
-
-      {isAdmin && projectProfile && (
-        <>
-          <h1>Perfil del proyecto</h1>
-          <ProjectProfileForm
-            repositoryId={id}
-            initial={{
-              language: projectProfile.language ?? '',
-              framework: projectProfile.framework ?? '',
-              frameworkVersion: projectProfile.framework_version ?? '',
-              runtime: projectProfile.runtime ?? '',
-              database: projectProfile.database ?? '',
-              architectureStyle: projectProfile.architecture_style ?? '',
-              testingStrategy: projectProfile.testing_strategy ?? '',
-              migrationsPolicy: projectProfile.migrations_policy ?? '',
-              compatibilityNotes: projectProfile.compatibility_notes ?? '',
-              notes: projectProfile.notes ?? '',
-              mandatoryRules: (projectProfile.mandatory_rules ?? []).join('\n'),
-              securityRules: (projectProfile.security_rules ?? []).join('\n'),
-              conventions: (projectProfile.conventions ?? []).join('\n'),
-            }}
-          />
-        </>
-      )}
-
-      {isAdmin && settings && (
-        <>
-          <h1>Configuración</h1>
-          <RepoSettingsForm
-            repositoryId={id}
-            promotionSourceBranch={settings.promotion_source_branch}
-            promotionTargetBranch={settings.promotion_target_branch}
-            autoCreatePrOnPush={settings.auto_create_pr_on_push}
-          />
-        </>
-      )}
-
-      {isAdmin && (
-        <>
-          <h1>Acceso</h1>
-          <p style={{ color: 'var(--text-muted)' }}>
-            Usuarios con rol &quot;usuario&quot; solo ven los repositorios que tienen asignados aquí, con todos sus commits.
-          </p>
-          <RepoMembersForm
-            repositoryId={id}
-            members={members.map((m) => ({ userId: m.user_id, name: m.name, email: m.email }))}
-            candidates={assignableTeamMembers.map((m) => ({ userId: m.user_id, name: m.name, email: m.email }))}
-          />
-        </>
-      )}
-    </main>
+    </>
   );
 }

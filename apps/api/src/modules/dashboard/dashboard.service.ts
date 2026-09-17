@@ -72,46 +72,17 @@ export class DashboardService {
     if (!allowed) throw new ForbiddenException('no tienes acceso a este repositorio');
   }
 
-  async listRepositoryMembers(orgId: string, repositoryId: string) {
+  /** Detalle mínimo de un repo — usado por el layout de pestañas del detalle de repo
+   * (encabezado + barra de pestañas), sin repetir la query completa de settings. */
+  async getRepository(orgId: string, repositoryId: string) {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `SELECT u.id AS user_id, u.name, u.email, u.avatar_url, rm.created_at
-         FROM repository_members rm
-         JOIN users u ON u.id = rm.user_id
-         WHERE rm.repository_id = $1
-         ORDER BY rm.created_at`,
+        `SELECT id, full_name, default_branch, webhook_status FROM repositories WHERE id = $1`,
         [repositoryId],
       );
-      return rows;
+      if (!rows[0]) throw new NotFoundException('repository not found');
+      return rows[0];
     });
-  }
-
-  async addRepositoryMember(orgId: string, repositoryId: string, userId: string) {
-    await withTenant(orgId, async (client) => {
-      const { rows: repoRows } = await client.query('SELECT id FROM repositories WHERE id = $1', [repositoryId]);
-      if (!repoRows[0]) throw new NotFoundException('repository not found');
-
-      const { rows: memberRows } = await client.query(
-        'SELECT id FROM org_memberships WHERE organization_id = $1 AND user_id = $2',
-        [orgId, userId],
-      );
-      if (!memberRows[0]) throw new BadRequestException('el usuario no pertenece a esta organización');
-
-      await client.query(
-        `INSERT INTO repository_members (organization_id, repository_id, user_id)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (repository_id, user_id) DO NOTHING`,
-        [orgId, repositoryId, userId],
-      );
-    });
-    return this.listRepositoryMembers(orgId, repositoryId);
-  }
-
-  async removeRepositoryMember(orgId: string, repositoryId: string, userId: string) {
-    await withTenant(orgId, async (client) => {
-      await client.query('DELETE FROM repository_members WHERE repository_id = $1 AND user_id = $2', [repositoryId, userId]);
-    });
-    return this.listRepositoryMembers(orgId, repositoryId);
   }
 
   async getRepositorySettings(orgId: string, repositoryId: string) {
@@ -162,8 +133,14 @@ export class DashboardService {
     return this.getRepositorySettings(orgId, repositoryId);
   }
 
-  async listPushes(orgId: string, repositoryId: string) {
+  async listPushes(orgId: string, repositoryId: string, page: number, pageSize: number) {
     return withTenant(orgId, async (client) => {
+      const { rows: countRows } = await client.query(
+        `SELECT count(*)::int AS n FROM review_runs WHERE repository_id = $1 AND trigger = 'push'`,
+        [repositoryId],
+      );
+      const total = countRows[0]?.n ?? 0;
+
       const { rows } = await client.query(
         `SELECT rr.id, rr.commit_sha, rr.branch, rr.status, rr.quality_score, rr.risk_level,
                 rr.gate_decision, rr.author_name, rr.author_email, rr.notified_at,
@@ -173,10 +150,10 @@ export class DashboardService {
          FROM review_runs rr
          WHERE rr.repository_id = $1 AND rr.trigger = 'push'
          ORDER BY rr.started_at DESC
-         LIMIT 50`,
-        [repositoryId],
+         LIMIT $2 OFFSET $3`,
+        [repositoryId, pageSize, (page - 1) * pageSize],
       );
-      return rows;
+      return { items: rows, total, page, pageSize };
     });
   }
 
@@ -468,20 +445,6 @@ export class DashboardService {
          ORDER BY rr.started_at DESC
          LIMIT 100`,
         [userId, orgId],
-      );
-      return rows;
-    });
-  }
-
-  async listTeam(orgId: string) {
-    return withTenant(orgId, async (client) => {
-      const { rows } = await client.query(
-        `SELECT om.role, u.id AS user_id, u.name, u.email, u.avatar_url, om.created_at
-         FROM org_memberships om
-         JOIN users u ON u.id = om.user_id
-         WHERE om.organization_id = $1
-         ORDER BY om.created_at`,
-        [orgId],
       );
       return rows;
     });

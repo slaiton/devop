@@ -24,8 +24,13 @@ async function fetchSetupStatus(): Promise<{ configured: boolean }> {
   return res.json();
 }
 
-export default async function HomePage() {
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ login_error?: string }>;
+}) {
   const session = await getSession();
+  const { login_error: loginError } = await searchParams;
 
   if (!session) {
     const { configured } = await fetchSetupStatus();
@@ -41,7 +46,8 @@ export default async function HomePage() {
     return (
       <main>
         <h1>DevSentinel AI</h1>
-        <p>Conecta tu cuenta de GitHub para ver tus repositorios.</p>
+        {loginError && <p className="error-text">{loginError}</p>}
+        <p>Inicia sesión con tu cuenta de GitHub.</p>
         <a href="/api/auth/github/login">Iniciar sesión con GitHub</a>
       </main>
     );
@@ -56,7 +62,7 @@ export default async function HomePage() {
         {isAdmin && (
           <>
             <a href="/overview">Ver pendientes</a> · <a href="/developers">Developers</a> ·{' '}
-            <a href="/team">Equipo</a> · <a href="/accounts">Cuentas de GitHub</a> ·{' '}
+            <a href="/users">Usuarios</a> · <a href="/accounts">Cuentas de GitHub</a> ·{' '}
             <a href="/settings">Configuración del sistema</a> ·{' '}
           </>
         )}

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { SystemSettingsForm, type SystemSettingsInitial } from '../SystemSettingsForm';
+import { FirstAdminForm } from './FirstAdminForm';
 
 async function fetchStatus(): Promise<{ configured: boolean }> {
   const res = await fetch(`${process.env.API_INTERNAL_URL}/api/system-settings/status`, { cache: 'no-store' });
@@ -35,8 +36,22 @@ export default async function SetupPage() {
       <h1>Configurar DevSentinel AI</h1>
       <p>
         Esta pantalla solo está disponible mientras el sistema no tenga configurada la GitHub App
-        (login OAuth). Completa al menos la sección de GitHub App para poder iniciar sesión — LLM
-        y SMTP se pueden dejar para después, desde <code>/settings</code> ya logueado.
+        (login OAuth). Hay dos pasos, <strong>en este orden</strong> — el segundo te saca de esta
+        pantalla apenas lo guardas, así que completa primero el registro de organización y admin.
+      </p>
+
+      <h2>1. Organización y primer admin</h2>
+      <p>
+        Registra la organización y el correo del primer admin — sin esto, nadie podrá iniciar sesión
+        todavía, incluso con GitHub App/LLM ya configurados.
+      </p>
+      <FirstAdminForm />
+
+      <h2>2. GitHub App / LLM / SMTP</h2>
+      <p>
+        Completa al menos la sección de GitHub App para poder iniciar sesión — LLM y SMTP se pueden
+        dejar para después, desde <code>/settings</code> ya logueado. Al guardar te lleva a la
+        pantalla de login.
       </p>
       <SystemSettingsForm endpoint="/api/system-settings/bootstrap" method="POST" initial={EMPTY} redirectOnSuccess="/" />
     </main>

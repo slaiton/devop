@@ -45,7 +45,12 @@ export class IssuesService {
 
   async getById(orgId: string, issueId: string, actor: Actor) {
     return withTenant(orgId, async (client) => {
-      const { rows } = await client.query('SELECT * FROM issues WHERE id = $1', [issueId]);
+      const { rows } = await client.query(
+        `SELECT i.*, r.full_name AS repository_full_name FROM issues i
+         JOIN repositories r ON r.id = i.repository_id
+         WHERE i.id = $1`,
+        [issueId],
+      );
       const issue = rows[0];
       if (!issue) throw new NotFoundException('issue not found');
       await this.assertCanView(client, issue, actor);
@@ -145,6 +150,7 @@ export class IssuesService {
           risk_level: run.risk_level,
           summary: run.summary,
         },
+        trigger: 'push',
       });
     });
     return { synced: true };

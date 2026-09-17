@@ -307,6 +307,7 @@ export class ReviewService {
             risk_level: result.risk_level,
             summary: result.resumen_ejecutivo,
           },
+          trigger: 'push',
         });
       });
     } catch (err) {

@@ -17,6 +17,7 @@ interface IssueComment {
 interface IssueDetail {
   id: string;
   repository_id: string;
+  repository_full_name: string;
   github_issue_number: number;
   kind: 'findings' | 'manual';
   origin: 'github' | 'devsentinel';
@@ -24,6 +25,10 @@ interface IssueDetail {
   body: string;
   state: 'open' | 'closed';
   author_login: string | null;
+  first_commit_sha: string | null;
+  last_commit_sha: string | null;
+  resolved_commit_sha: string | null;
+  resolved_via: 'push' | 'reconsideration' | null;
   ai_suggested_reply: string | null;
   ai_suggested_reply_status: 'pending' | 'ready' | 'failed' | null;
   ai_suggested_reply_error: string | null;
@@ -41,15 +46,20 @@ async function fetchJson<T>(path: string): Promise<T> {
 }
 
 const SOURCE_LABEL: Record<string, string> = { github: 'GitHub', devsentinel: 'DevSentinel' };
+const RESOLVED_VIA_LABEL: Record<string, string> = { push: 'un push nuevo', reconsideration: 'una reconsideración manual' };
+
+function CommitLink({ repositoryFullName, sha }: { repositoryFullName: string; sha: string }) {
+  return (
+    <a href={`https://github.com/${repositoryFullName}/commit/${sha}`} target="_blank" rel="noreferrer">
+      <code>{sha.slice(0, 7)}</code>
+    </a>
+  );
+}
 
 export default async function IssueDetailPage({ params }: { params: Promise<{ id: string; issueId: string }> }) {
   const session = await getSession();
   if (!session) {
-    return (
-      <main>
-        <p>No autorizado.</p>
-      </main>
-    );
+    return <p>No autorizado.</p>;
   }
 
   const isAdmin = session.role === 'admin';
@@ -60,21 +70,21 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
     issue = await fetchJson<IssueDetail>(`/issues/${issueId}`);
   } catch {
     return (
-      <main>
+      <>
         <p>
-          <Link href={`/repositories/${id}`}>&larr; Repositorio</Link>
+          <Link href={`/repositories/${id}/issues`}>&larr; Issues</Link>
         </p>
         <p>No tienes acceso a este issue.</p>
-      </main>
+      </>
     );
   }
 
   const visibleComments = issue.comments.filter((c) => !c.deleted_at);
 
   return (
-    <main>
+    <>
       <p>
-        <Link href={`/repositories/${id}`}>&larr; Repositorio</Link>
+        <Link href={`/repositories/${id}/issues`}>&larr; Issues</Link>
       </p>
 
       <h1>
@@ -87,6 +97,33 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
         <span className="badge badge-low">{SOURCE_LABEL[issue.origin]}</span>
         {issue.author_login && ` — creado por ${issue.author_login}`}
       </p>
+
+      {(issue.first_commit_sha || issue.resolved_commit_sha) && (
+        <p style={{ color: 'var(--text-muted)' }}>
+          {issue.first_commit_sha && (
+            <>
+              Detectado en <CommitLink repositoryFullName={issue.repository_full_name} sha={issue.first_commit_sha} />
+            </>
+          )}
+          {issue.last_commit_sha && issue.last_commit_sha !== issue.first_commit_sha && issue.state === 'open' && (
+            <>
+              {' '}
+              — último análisis: <CommitLink repositoryFullName={issue.repository_full_name} sha={issue.last_commit_sha} />
+            </>
+          )}
+          {issue.state === 'closed' && (
+            <>
+              {' '}
+              — resuelto por{' '}
+              {issue.resolved_commit_sha ? (
+                <CommitLink repositoryFullName={issue.repository_full_name} sha={issue.resolved_commit_sha} />
+              ) : (
+                RESOLVED_VIA_LABEL[issue.resolved_via ?? ''] ?? 'una acción manual'
+              )}
+            </>
+          )}
+        </p>
+      )}
 
       <div className="card">
         <p style={{ whiteSpace: 'pre-wrap' }}>{issue.body}</p>
@@ -124,6 +161,6 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
           />
         </>
       )}
-    </main>
+    </>
   );
 }

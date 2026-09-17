@@ -148,6 +148,8 @@ export class ReconsiderService {
             risk_level: result.updated_risk_level,
             summary: run.summary,
           },
+          trigger: 'reconsideration',
+          resolutionContext: `comentario: "${payload.comment}" — ${result.justification}`,
         });
       } catch (err) {
         this.logger.error(

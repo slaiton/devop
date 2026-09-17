@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { sign } from 'jsonwebtoken';
 import { getPool, withTenant } from '@devsentinel/database';
 import { getSystemSettings } from '@devsentinel/settings';
@@ -28,11 +28,6 @@ export class AuthService {
       state,
     });
     return `https://github.com/login/oauth/authorize?${params.toString()}`;
-  }
-
-  async getAppSlug(): Promise<string> {
-    const settings = await getSystemSettings(getPool());
-    return settings?.githubAppSlug ?? '';
   }
 
   /** Genera la URL para instalar la App en otra cuenta de GitHub, ligando esa
@@ -88,40 +83,77 @@ export class AuthService {
     return (await userResponse.json()) as GithubUser;
   }
 
-  async upsertUser(githubUser: GithubUser): Promise<string> {
-    const { rows } = await getPool().query(
-      `INSERT INTO users (github_user_id, email, name, avatar_url)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (github_user_id) DO UPDATE SET email = $2, name = $3, avatar_url = $4
-       RETURNING id`,
-      [githubUser.id, githubUser.email, githubUser.name, githubUser.avatar_url],
+  /** El login ya no da de alta usuarios a ciegas: si `github_user_id` ya existe
+   * (alguien que ya se logueó antes), solo refresca su perfil. Si es la primera vez,
+   * exige que su correo de GitHub coincida con un usuario pendiente (`github_user_id
+   * IS NULL`) pre-registrado por un admin desde /users — si no hay match, se rechaza. */
+  async resolveRegisteredUser(githubUser: GithubUser): Promise<string> {
+    const pool = getPool();
+    const { rows: byGithubId } = await pool.query('SELECT id FROM users WHERE github_user_id = $1', [githubUser.id]);
+    if (byGithubId[0]) {
+      const userId = byGithubId[0].id as string;
+      await pool.query(
+        `UPDATE users SET name = COALESCE($2, name), avatar_url = $3, email = COALESCE($4, email) WHERE id = $1`,
+        [userId, githubUser.name, githubUser.avatar_url, githubUser.email],
+      );
+      return userId;
+    }
+
+    if (!githubUser.email) {
+      throw new ForbiddenException(
+        'tu cuenta de GitHub no expone un correo público — pídele a un administrador que verifique tu registro',
+      );
+    }
+
+    const { rows: pending } = await pool.query(
+      'SELECT id FROM users WHERE github_user_id IS NULL AND lower(email) = lower($1)',
+      [githubUser.email],
     );
-    return rows[0].id as string;
+    if (!pending[0]) {
+      throw new ForbiddenException('tu correo no está registrado — pídele a un administrador que te agregue desde Usuarios');
+    }
+
+    const userId = pending[0].id as string;
+    await pool.query(`UPDATE users SET github_user_id = $2, name = COALESCE(name, $3), avatar_url = $4 WHERE id = $1`, [
+      userId,
+      githubUser.id,
+      githubUser.name,
+      githubUser.avatar_url,
+    ]);
+    return userId;
   }
 
-  async findOrganizationForLogin(login: string): Promise<string | null> {
-    const { rows } = await getPool().query('SELECT id FROM organizations WHERE slug = $1', [login.toLowerCase()]);
-    return rows[0]?.id ?? null;
-  }
-
-  /** Cubre el caso de alguien invitado cuyo login de GitHub no coincide con el slug de
-   * la organización (ese matching solo aplica a quien instaló la App). org_memberships
-   * tiene RLS, así que resolver el tenant sin conocerlo aún exige la función
-   * SECURITY DEFINER creada en la migración 0012 (mismo patrón que
-   * resolve_organization_for_installation). */
+  /** org_memberships tiene RLS, así que resolver el tenant de un usuario sin conocerlo
+   * aún exige la función SECURITY DEFINER creada en la migración 0012 (mismo patrón
+   * que resolve_organization_for_installation). */
   async findOrganizationForUser(userId: string): Promise<string | null> {
     const { rows } = await getPool().query('SELECT resolve_organization_for_user($1) AS organization_id', [userId]);
     return rows[0]?.organization_id ?? null;
   }
 
-  async ensureMembership(organizationId: string, userId: string): Promise<void> {
-    await withTenant(organizationId, async (client) => {
-      await client.query(
-        `INSERT INTO org_memberships (organization_id, user_id, role)
-         VALUES ($1, $2, 'admin')
-         ON CONFLICT (organization_id, user_id) DO NOTHING`,
-        [organizationId, userId],
+  /** Bootstrap para organizaciones nuevas (una cuenta de GitHub distinta instala la
+   * App después de la primera, vía `setup_action=install`): si esa instalación resuelve
+   * a una organización que todavía tiene CERO miembros, quien completa el login se
+   * vuelve admin. Si la organización ya tiene gente, no otorga nada — evita reabrir la
+   * puerta de auto-admin en organizaciones ya pobladas. */
+  async bootstrapFirstAdminForInstallation(installationId: number, userId: string): Promise<string | null> {
+    const { rows } = await getPool().query('SELECT resolve_organization_for_installation($1) AS organization_id', [
+      installationId,
+    ]);
+    const organizationId: string | null = rows[0]?.organization_id ?? null;
+    if (!organizationId) return null;
+
+    return withTenant(organizationId, async (client) => {
+      const { rows: memberRows } = await client.query(
+        'SELECT count(*)::int AS n FROM org_memberships WHERE organization_id = $1',
+        [organizationId],
       );
+      if (memberRows[0].n > 0) return null;
+      await client.query(`INSERT INTO org_memberships (organization_id, user_id, role) VALUES ($1, $2, 'admin')`, [
+        organizationId,
+        userId,
+      ]);
+      return organizationId;
     });
   }
 
@@ -146,39 +178,6 @@ export class AuthService {
       );
       return rows[0]?.role ?? null;
     });
-  }
-
-  /** Invita a alguien por username de GitHub (API pública, sin auth) con rol "user" —
-   * no requiere que esa persona haya iniciado sesión todavía. Sin repos asignados
-   * todavía no ve nada (ver repository_members / dashboard.service.addRepositoryMember). */
-  async inviteUser(organizationId: string, githubLogin: string): Promise<{ userId: string }> {
-    const res = await fetch(`https://api.github.com/users/${encodeURIComponent(githubLogin)}`, {
-      headers: { 'User-Agent': 'devsentinel-ai', Accept: 'application/vnd.github+json' },
-    });
-    if (!res.ok) {
-      throw new Error(`no se encontró la cuenta de GitHub "${githubLogin}"`);
-    }
-    const ghUser = (await res.json()) as { id: number; login: string; name: string | null; avatar_url: string };
-
-    const { rows } = await getPool().query(
-      `INSERT INTO users (github_user_id, email, name, avatar_url)
-       VALUES ($1, NULL, $2, $3)
-       ON CONFLICT (github_user_id) DO UPDATE SET name = COALESCE(users.name, $2), avatar_url = $3
-       RETURNING id`,
-      [ghUser.id, ghUser.name ?? ghUser.login, ghUser.avatar_url],
-    );
-    const userId = rows[0].id as string;
-
-    await withTenant(organizationId, async (client) => {
-      await client.query(
-        `INSERT INTO org_memberships (organization_id, user_id, role)
-         VALUES ($1, $2, 'user')
-         ON CONFLICT (organization_id, user_id) DO NOTHING`,
-        [organizationId, userId],
-      );
-    });
-
-    return { userId };
   }
 
   issueSessionToken(userId: string, organizationId: string): string {
