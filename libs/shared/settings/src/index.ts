@@ -121,3 +121,4 @@ export async function updateSystemSettings(pool: Pool, partial: Partial<SystemSe
 }
 
 export { encrypt, decrypt } from './encryption';
+export { sendEmail, SmtpNotConfiguredError } from './email';

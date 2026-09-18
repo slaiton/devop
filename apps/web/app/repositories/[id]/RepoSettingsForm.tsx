@@ -8,16 +8,22 @@ export function RepoSettingsForm({
   promotionSourceBranch,
   promotionTargetBranch,
   autoCreatePrOnPush,
+  notifyAuthorOnPush,
+  autoMergeOnGreen,
 }: {
   repositoryId: string;
   promotionSourceBranch: string;
   promotionTargetBranch: string;
   autoCreatePrOnPush: boolean;
+  notifyAuthorOnPush: boolean;
+  autoMergeOnGreen: boolean;
 }) {
   const router = useRouter();
   const [sourceBranch, setSourceBranch] = useState(promotionSourceBranch);
   const [targetBranch, setTargetBranch] = useState(promotionTargetBranch);
   const [autoCreatePr, setAutoCreatePr] = useState(autoCreatePrOnPush);
+  const [notifyAuthor, setNotifyAuthor] = useState(notifyAuthorOnPush);
+  const [autoMerge, setAutoMerge] = useState(autoMergeOnGreen);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -35,6 +41,8 @@ export function RepoSettingsForm({
           promotionSourceBranch: sourceBranch.trim(),
           promotionTargetBranch: targetBranch.trim(),
           autoCreatePrOnPush: autoCreatePr,
+          notifyAuthorOnPush: notifyAuthor,
+          autoMergeOnGreen: autoMerge,
         }),
       });
       if (!res.ok) {
@@ -69,6 +77,19 @@ export function RepoSettingsForm({
         <label style={{ flexDirection: 'row', alignItems: 'center', gap: '0.4rem' }}>
           <input type="checkbox" checked={autoCreatePr} onChange={(e) => setAutoCreatePr(e.target.checked)} style={{ minWidth: 0 }} />
           Crear Pull Request automáticamente cuando un push a la rama origen salga APTO
+        </label>
+      </p>
+      <p>
+        <label style={{ flexDirection: 'row', alignItems: 'center', gap: '0.4rem' }}>
+          <input type="checkbox" checked={notifyAuthor} onChange={(e) => setNotifyAuthor(e.target.checked)} style={{ minWidth: 0 }} />
+          Notificar por correo al autor de cada push analizado
+        </label>
+      </p>
+      <p>
+        <label style={{ flexDirection: 'row', alignItems: 'center', gap: '0.4rem' }}>
+          <input type="checkbox" checked={autoMerge} onChange={(e) => setAutoMerge(e.target.checked)} style={{ minWidth: 0 }} />
+          Mergear automáticamente el Pull Request de promoción cuando un push a la rama origen salga APTO (score verde) — sin revisión
+          humana
         </label>
       </p>
       <button type="submit" disabled={loading}>

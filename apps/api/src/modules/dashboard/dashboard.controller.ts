@@ -11,6 +11,8 @@ interface UpdateRepositorySettingsBody {
   promotionSourceBranch?: string;
   promotionTargetBranch?: string;
   autoCreatePrOnPush?: boolean;
+  notifyAuthorOnPush?: boolean;
+  autoMergeOnGreen?: boolean;
 }
 
 interface UpdateProjectProfileBody {

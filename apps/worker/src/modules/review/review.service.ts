@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { getPool, withTenant } from '@devsentinel/database';
 import { GithubAdapter, type GitProviderPort } from '@devsentinel/git-providers';
 import { OpenAiCompatibleLlmAdapter, embedLocally, type ProjectProfile, type ReviewResult } from '@devsentinel/llm-port';
-import { getSystemSettings } from '@devsentinel/settings';
+import { getSystemSettings, sendEmail } from '@devsentinel/settings';
 import type { ReviewJobPayload } from '@devsentinel/event-contracts';
 import { buildPullRequestContent } from '@devsentinel/pr-content';
 import { upsertFindingsIssue } from '@devsentinel/issue-content';
@@ -23,6 +23,12 @@ const DEFAULT_GATE_CONFIG: QualityGateConfig = {
 };
 
 type GateDecision = 'apto' | 'requiere_revision' | 'no_apto';
+
+const GATE_LABEL: Record<GateDecision, string> = {
+  apto: '✓ APTO',
+  requiere_revision: '⚠ REQUIERE REVISIÓN',
+  no_apto: '❌ NO APTO',
+};
 
 // Categorías donde un finding critical fuerza NO APTO sin importar el score o lo que
 // sugiera el LLM — regla dura determinista, no a discreción del modelo.
@@ -127,6 +133,7 @@ export class ReviewService {
       await this.publishToGithub(gitAdapter, payload, result, gateDecision);
       await this.syncFindingsIssue(gitAdapter, payload, result, gateDecision);
       await this.maybeAutoCreatePullRequest(gitAdapter, payload, result, gateDecision);
+      await this.notifyAuthorOnPush(gitAdapter, payload, result, gateDecision);
     } catch (err) {
       this.logger.error(
         `review run ${payload.reviewRunId} failed for ${payload.owner}/${payload.repo}@${payload.commitSha}: ${(err as Error).message}`,
@@ -333,7 +340,7 @@ export class ReviewService {
       (gateDecision === 'apto' || (result.risk_level === 'medium' && result.quality_score <= 70));
     if (payload.pullNumber || !eligible) return;
 
-    const config = await this.getPrAutoCreateConfig(payload.organizationId, payload.repositoryId);
+    const config = await this.getPushAutomationConfig(payload.organizationId, payload.repositoryId);
     if (!config.auto_create_pr_on_push || payload.branch !== config.promotion_source_branch) return;
 
     const existing = await gitAdapter.findOpenPullRequest({
@@ -407,13 +414,151 @@ export class ReviewService {
     }
   }
 
-  private async getPrAutoCreateConfig(
+  /** Notifica por correo al autor de cada push analizado (activado por defecto,
+   * `notify_author_on_push` por repo) y, si el commit salió APTO (score verde) y el
+   * repo tiene `auto_merge_on_green` activo, intenta mergear el PR de promoción antes
+   * de componer el correo — así el correo siempre refleja lo que realmente pasó, nunca
+   * una promesa de merge que después falló. Un fallo acá (SMTP no configurado, merge
+   * rechazado por GitHub) no debe tumbar el review run; solo se loguea. */
+  private async notifyAuthorOnPush(
+    gitAdapter: GitProviderPort,
+    payload: ReviewJobPayload,
+    result: ReviewResult,
+    gateDecision: GateDecision,
+  ): Promise<void> {
+    if (payload.pullNumber) return; // solo pushes — un PR nativo ya tiene su propio flujo de revisión
+
+    try {
+      const config = await this.getPushAutomationConfig(payload.organizationId, payload.repositoryId);
+      if (!config.notify_author_on_push) return;
+
+      const { authorName, authorEmail, alreadyNotified } = await withTenant(payload.organizationId, async (client) => {
+        const { rows } = await client.query(
+          `SELECT author_name, author_email, notified_at FROM review_runs WHERE id = $1`,
+          [payload.reviewRunId],
+        );
+        return {
+          authorName: rows[0]?.author_name ?? null,
+          authorEmail: rows[0]?.author_email ?? null,
+          alreadyNotified: Boolean(rows[0]?.notified_at),
+        };
+      });
+      if (!authorEmail || alreadyNotified) return;
+
+      let mergeOutcome: 'merged' | 'failed' | null = null;
+      let pullRequestUrl: string | null = null;
+
+      const eligibleForAutoMerge =
+        gateDecision === 'apto' && config.auto_merge_on_green && payload.branch === config.promotion_source_branch;
+      if (eligibleForAutoMerge) {
+        const pr = await gitAdapter.findOpenPullRequest({
+          installationId: payload.installationId,
+          owner: payload.owner,
+          repo: payload.repo,
+          head: payload.branch,
+          base: config.promotion_target_branch,
+        });
+        if (pr) {
+          pullRequestUrl = `https://github.com/${payload.owner}/${payload.repo}/pull/${pr.number}`;
+          try {
+            const { merged } = await gitAdapter.mergePullRequest({
+              installationId: payload.installationId,
+              owner: payload.owner,
+              repo: payload.repo,
+              pullNumber: pr.number,
+            });
+            mergeOutcome = merged ? 'merged' : 'failed';
+          } catch (err) {
+            this.logger.warn(
+              `auto-merge del PR #${pr.number} en ${payload.owner}/${payload.repo} falló: ${(err as Error).message}`,
+            );
+            mergeOutcome = 'failed';
+          }
+        }
+      }
+
+      const html = this.buildPushNotificationEmail({
+        payload,
+        result,
+        gateDecision,
+        authorName,
+        mergeOutcome,
+        pullRequestUrl,
+      });
+
+      await sendEmail(getPool(), {
+        to: authorEmail,
+        subject: `DevSentinel AI — ${GATE_LABEL[gateDecision]} en ${payload.branch} (${payload.commitSha.slice(0, 7)})`,
+        html,
+      });
+
+      await withTenant(payload.organizationId, async (client) => {
+        await client.query(`UPDATE review_runs SET notified_at = now() WHERE id = $1 AND notified_at IS NULL`, [
+          payload.reviewRunId,
+        ]);
+      });
+    } catch (err) {
+      this.logger.error(
+        `no se pudo notificar/auto-mergear el review run ${payload.reviewRunId}: ${(err as Error).message}`,
+        (err as Error).stack,
+      );
+    }
+  }
+
+  private buildPushNotificationEmail(input: {
+    payload: ReviewJobPayload;
+    result: ReviewResult;
+    gateDecision: GateDecision;
+    authorName: string | null;
+    mergeOutcome: 'merged' | 'failed' | null;
+    pullRequestUrl: string | null;
+  }): string {
+    const { payload, result, gateDecision, authorName, mergeOutcome, pullRequestUrl } = input;
+    const shortSha = payload.commitSha.slice(0, 7);
+    const statusLabel = GATE_LABEL[gateDecision];
+
+    const findingsHtml = result.findings.length
+      ? `<ul>${result.findings
+          .map((f) => `<li><strong>[${f.severity.toUpperCase()}] ${f.title}</strong> (${f.file_path})<br/>${f.explanation}</li>`)
+          .join('')}</ul>`
+      : '<p>Sin hallazgos.</p>';
+
+    const mergeHtml =
+      mergeOutcome === 'merged'
+        ? `<p>✅ <strong>Se creó y mergeó automáticamente</strong> el Pull Request hacia la rama de destino.${pullRequestUrl ? ` <a href="${pullRequestUrl}">Ver PR</a>` : ''}</p>`
+        : mergeOutcome === 'failed'
+          ? `<p>⚠️ El commit salió APTO pero el auto-merge no se pudo completar (conflictos u otro bloqueo en GitHub) — requiere mergear a mano.${pullRequestUrl ? ` <a href="${pullRequestUrl}">Ver PR</a>` : ''}</p>`
+          : '';
+
+    const publicOrigin = process.env.PUBLIC_WEB_ORIGIN ?? '';
+    const detailLink = publicOrigin
+      ? `<p><a href="${publicOrigin}/review-runs/${payload.reviewRunId}">Ver detalle en DevSentinel</a></p>`
+      : '';
+
+    return [
+      `<p>Hola ${authorName ?? ''},</p>`,
+      `<p>DevSentinel AI analizó tu push a <strong>${payload.branch}</strong> (commit <code>${shortSha}</code>): <strong>${statusLabel}</strong>.</p>`,
+      `<p>Score: ${result.quality_score}/100 — Riesgo: ${result.risk_level}</p>`,
+      result.resumen_ejecutivo ? `<p>${result.resumen_ejecutivo}</p>` : '',
+      findingsHtml,
+      mergeHtml,
+      detailLink,
+    ].join('\n');
+  }
+
+  private async getPushAutomationConfig(
     organizationId: string,
     repositoryId: string,
-  ): Promise<{ auto_create_pr_on_push: boolean; promotion_source_branch: string; promotion_target_branch: string }> {
+  ): Promise<{
+    auto_create_pr_on_push: boolean;
+    notify_author_on_push: boolean;
+    auto_merge_on_green: boolean;
+    promotion_source_branch: string;
+    promotion_target_branch: string;
+  }> {
     return withTenant(organizationId, async (client) => {
       const { rows } = await client.query(
-        `SELECT auto_create_pr_on_push,
+        `SELECT auto_create_pr_on_push, notify_author_on_push, auto_merge_on_green,
                 COALESCE(promotion_source_branch, 'staging') AS promotion_source_branch,
                 COALESCE(promotion_target_branch, 'main') AS promotion_target_branch
          FROM quality_gate_configs
@@ -422,7 +567,15 @@ export class ReviewService {
          LIMIT 1`,
         [organizationId, repositoryId],
       );
-      return rows[0] ?? { auto_create_pr_on_push: false, promotion_source_branch: 'staging', promotion_target_branch: 'main' };
+      return (
+        rows[0] ?? {
+          auto_create_pr_on_push: false,
+          notify_author_on_push: true,
+          auto_merge_on_green: false,
+          promotion_source_branch: 'staging',
+          promotion_target_branch: 'main',
+        }
+      );
     });
   }
 

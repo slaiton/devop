@@ -6,6 +6,8 @@ interface RepoSettings {
   promotion_source_branch: string;
   promotion_target_branch: string;
   auto_create_pr_on_push: boolean;
+  notify_author_on_push: boolean;
+  auto_merge_on_green: boolean;
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -39,6 +41,8 @@ export default async function RepositorySettingsTab({ params }: { params: Promis
       promotionSourceBranch={settings.promotion_source_branch}
       promotionTargetBranch={settings.promotion_target_branch}
       autoCreatePrOnPush={settings.auto_create_pr_on_push}
+      notifyAuthorOnPush={settings.notify_author_on_push}
+      autoMergeOnGreen={settings.auto_merge_on_green}
     />
   );
 }

@@ -8,9 +8,11 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "nodemailer": "^6.9.16",
     "pg": "^8.13.1"
   },
   "devDependencies": {
+    "@types/nodemailer": "^6.4.17",
     "@types/pg": "^8.11.10",
     "typescript": "^5.7.2"
   }
