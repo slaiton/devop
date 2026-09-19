@@ -32,23 +32,39 @@ export class DashboardService {
   }
 
   /** admin ve todos los repos de la org; un usuario ("user") solo los que tiene
-   * asignados en repository_members. */
+   * asignados en repository_members. Incluye la última interacción (push/PR analizado
+   * más reciente) por repo vía LATERAL, para pintar el dashboard sin N+1 requests. */
   async listRepositories(orgId: string, actor: Actor) {
+    const lastActivityJoin = `
+      LEFT JOIN LATERAL (
+        SELECT commit_sha, branch, gate_decision, risk_level, quality_score, started_at
+        FROM review_runs
+        WHERE review_runs.repository_id = r.id
+        ORDER BY started_at DESC
+        LIMIT 1
+      ) last_run ON true`;
+    const lastActivityFields = `
+      last_run.commit_sha AS last_commit_sha, last_run.branch AS last_branch,
+      last_run.gate_decision AS last_gate_decision, last_run.risk_level AS last_risk_level,
+      last_run.quality_score AS last_quality_score, last_run.started_at AS last_activity_at`;
+
     return withTenant(orgId, async (client) => {
       if (actor.role === 'admin') {
         const { rows } = await client.query(
-          `SELECT id, full_name, default_branch, webhook_status, created_at
-           FROM repositories
-           ORDER BY full_name`,
+          `SELECT r.id, r.full_name, r.default_branch, r.webhook_status, r.created_at, ${lastActivityFields}
+           FROM repositories r
+           ${lastActivityJoin}
+           ORDER BY last_run.started_at DESC NULLS LAST, r.full_name`,
         );
         return rows;
       }
       const { rows } = await client.query(
-        `SELECT r.id, r.full_name, r.default_branch, r.webhook_status, r.created_at
+        `SELECT r.id, r.full_name, r.default_branch, r.webhook_status, r.created_at, ${lastActivityFields}
          FROM repositories r
          JOIN repository_members rm ON rm.repository_id = r.id
+         ${lastActivityJoin}
          WHERE rm.user_id = $1
-         ORDER BY r.full_name`,
+         ORDER BY last_run.started_at DESC NULLS LAST, r.full_name`,
         [actor.userId],
       );
       return rows;

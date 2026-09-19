@@ -30,6 +30,12 @@ export class AuthController {
     res.redirect(await this.authService.buildAuthorizeUrl(state));
   }
 
+  @Get('logout')
+  logout(@Res() res: Response): void {
+    res.clearCookie('session');
+    res.redirect(process.env.PUBLIC_WEB_ORIGIN ?? '/');
+  }
+
   @Get('link-account')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
@@ -122,11 +128,11 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async me(@CurrentOrg() orgId: string, @CurrentUser() userId: string) {
     const role = await this.authService.getMembershipRole(orgId, userId);
-    const { rows } = await getPool().query(
-      'SELECT name, avatar_url, email, github_user_id FROM users WHERE id = $1',
-      [userId],
-    );
-    const user = rows[0];
+    const [{ rows: userRows }, { rows: orgRows }] = await Promise.all([
+      getPool().query('SELECT name, avatar_url, email, github_user_id FROM users WHERE id = $1', [userId]),
+      getPool().query('SELECT name FROM organizations WHERE id = $1', [orgId]),
+    ]);
+    const user = userRows[0];
     return {
       userId,
       orgId,
@@ -134,6 +140,7 @@ export class AuthController {
       name: user?.name ?? null,
       avatarUrl: user?.avatar_url ?? null,
       email: user?.email ?? null,
+      orgName: orgRows[0]?.name ?? null,
     };
   }
 

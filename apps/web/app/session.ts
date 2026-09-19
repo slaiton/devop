@@ -7,6 +7,7 @@ export interface Session {
   name: string | null;
   avatarUrl: string | null;
   email: string | null;
+  orgName: string | null;
 }
 
 export async function getSession(): Promise<Session | null> {

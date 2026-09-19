@@ -44,7 +44,7 @@ export function FirstAdminForm() {
 
   return (
     <form onSubmit={handleSubmit}>
-      <p style={{ color: 'var(--text-muted)' }}>
+      <p style={{ color: 'var(--ink-muted)' }}>
         La cuenta u organización de GitHub debe coincidir EXACTAMENTE con donde vas a instalar la App —
         si no coincide, la instalación creará una organización aparte y el admin registrado aquí no verá
         sus repos.
