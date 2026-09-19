@@ -10,6 +10,7 @@ COPY libs/shared/event-contracts/package.json libs/shared/event-contracts/
 COPY libs/shared/pr-content/package.json libs/shared/pr-content/
 COPY libs/shared/issue-content/package.json libs/shared/issue-content/
 COPY libs/shared/settings/package.json libs/shared/settings/
+COPY libs/shared/github-apps/package.json libs/shared/github-apps/
 COPY libs/domain/git-providers/package.json libs/domain/git-providers/
 COPY libs/domain/llm-port/package.json libs/domain/llm-port/
 RUN npm install
@@ -21,6 +22,7 @@ COPY libs/shared/event-contracts libs/shared/event-contracts
 COPY libs/shared/pr-content libs/shared/pr-content
 COPY libs/shared/issue-content libs/shared/issue-content
 COPY libs/shared/settings libs/shared/settings
+COPY libs/shared/github-apps libs/shared/github-apps
 COPY libs/domain/git-providers libs/domain/git-providers
 COPY libs/domain/llm-port libs/domain/llm-port
 RUN npm run build --workspace=@devsentinel/database \
@@ -30,6 +32,7 @@ RUN npm run build --workspace=@devsentinel/database \
  && npm run build --workspace=@devsentinel/git-providers \
  && npm run build --workspace=@devsentinel/llm-port \
  && npm run build --workspace=@devsentinel/issue-content \
+ && npm run build --workspace=@devsentinel/github-apps \
  && npm run build --workspace=@devsentinel/worker
 
 FROM node:20-slim AS runtime
