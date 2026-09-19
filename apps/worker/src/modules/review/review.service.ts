@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { getPool, withTenant } from '@devsentinel/database';
-import { GithubAdapter, type GitProviderPort } from '@devsentinel/git-providers';
+import type { GitProviderPort } from '@devsentinel/git-providers';
+import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import { OpenAiCompatibleLlmAdapter, embedLocally, type ProjectProfile, type ReviewResult } from '@devsentinel/llm-port';
 import { getSystemSettings, sendEmail } from '@devsentinel/settings';
 import type { ReviewJobPayload } from '@devsentinel/event-contracts';
@@ -44,17 +45,19 @@ export class ReviewService {
     private readonly ragContext: RagContextService,
   ) {}
 
-  /** Construye el adapter de GitHub y el cliente LLM con la configuración vigente en
+  /** Construye el adapter de GitHub (credenciales de la App dueña de esta instalación,
+   * ver `github_apps`) y el cliente LLM con la configuración vigente en
    * `system_settings` — se hace por job (no en el constructor) para que un cambio de
    * proveedor LLM o de credenciales de GitHub aplique al siguiente push sin reiniciar
    * el worker. */
-  private async buildClients(): Promise<{ gitAdapter: GitProviderPort; llm: OpenAiCompatibleLlmAdapter }> {
-    const settings = await getSystemSettings(getPool());
-    const gitAdapter = new GithubAdapter({
-      appId: settings?.githubAppId ?? '',
-      privateKey: (settings?.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
-      webhookSecret: settings?.githubAppWebhookSecret ?? '',
-    });
+  private async buildClients(
+    organizationId: string,
+    installationId: number,
+  ): Promise<{ gitAdapter: GitProviderPort; llm: OpenAiCompatibleLlmAdapter }> {
+    const [gitAdapter, settings] = await Promise.all([
+      withTenant(organizationId, (client) => buildGithubAdapterForInstallation(client, installationId)),
+      getSystemSettings(getPool()),
+    ]);
     const llm = new OpenAiCompatibleLlmAdapter(
       settings?.llmModel ?? '',
       settings?.llmProviderBaseUrl ?? '',
@@ -66,7 +69,7 @@ export class ReviewService {
 
   async runReview(payload: ReviewJobPayload): Promise<void> {
     try {
-      const { gitAdapter, llm } = await this.buildClients();
+      const { gitAdapter, llm } = await this.buildClients(payload.organizationId, payload.installationId);
 
       const diff = payload.pullNumber
         ? await gitAdapter.getPullRequestDiff({

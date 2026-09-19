@@ -2,9 +2,8 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import type { PoolClient } from 'pg';
-import { getPool, withTenant } from '@devsentinel/database';
-import { GithubAdapter } from '@devsentinel/git-providers';
-import { getSystemSettings } from '@devsentinel/settings';
+import { withTenant } from '@devsentinel/database';
+import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import { ISSUE_REPLY_SUGGESTION_QUEUE_NAME, type IssueReplySuggestionJobPayload } from '@devsentinel/event-contracts';
 import { parseReviewRunIdFromIssueBody, upsertFindingsIssue } from '@devsentinel/issue-content';
 
@@ -18,15 +17,6 @@ export class IssuesService {
   constructor(
     @InjectQueue(ISSUE_REPLY_SUGGESTION_QUEUE_NAME) private readonly issueReplyQueue: Queue<IssueReplySuggestionJobPayload>,
   ) {}
-
-  private async getAdapter(): Promise<GithubAdapter> {
-    const settings = await getSystemSettings(getPool());
-    return new GithubAdapter({
-      appId: settings?.githubAppId ?? '',
-      privateKey: (settings?.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
-      webhookSecret: settings?.githubAppWebhookSecret ?? '',
-    });
-  }
 
   async listForRepository(orgId: string, repositoryId: string, actor: Actor) {
     return withTenant(orgId, async (client) => {
@@ -66,9 +56,9 @@ export class IssuesService {
 
   async postComment(orgId: string, issueId: string, body: string, actorUserId: string) {
     if (!body?.trim()) throw new BadRequestException('el comentario no puede estar vacío');
-    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const ref = await this.loadGithubRef(client, issueId);
+      const adapter = await buildGithubAdapterForInstallation(client, ref.installationId);
       const { commentId } = await adapter.postIssueComment({
         installationId: ref.installationId,
         owner: ref.owner,
@@ -116,7 +106,6 @@ export class IssuesService {
    * misma lógica idempotente que el flujo automático del worker, solo que disparada a
    * mano (p. ej. para forzar la sincronización sin esperar un push nuevo). */
   async createOrSyncFindingsIssue(orgId: string, repositoryId: string, reviewRunId: string): Promise<{ synced: true }> {
-    const adapter = await this.getAdapter();
     await withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `SELECT rr.commit_sha, rr.branch, rr.pull_request_id, rr.quality_score, rr.risk_level, rr.gate_decision, rr.summary,
@@ -131,6 +120,7 @@ export class IssuesService {
       const run = rows[0];
       if (!run) throw new NotFoundException('review run not found');
       const [owner, repo] = String(run.full_name).split('/');
+      const adapter = await buildGithubAdapterForInstallation(client, Number(run.installation_id));
 
       await upsertFindingsIssue(client, adapter, {
         organizationId: orgId,
@@ -162,7 +152,6 @@ export class IssuesService {
    * issues cuyo body trae el marcador de `buildIssueContent` se reclasifican como
    * `kind='findings', origin='devsentinel'` en vez de asumirlos manuales. */
   async backfillIssues(orgId: string, repositoryId: string): Promise<{ synced: number }> {
-    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { rows: repoRows } = await client.query(
         `SELECT r.full_name, gi.installation_id FROM repositories r
@@ -173,6 +162,7 @@ export class IssuesService {
       if (!repoRow) throw new NotFoundException('repository not found');
       const [owner, repo] = String(repoRow.full_name).split('/');
       const installationId = Number(repoRow.installation_id);
+      const adapter = await buildGithubAdapterForInstallation(client, installationId);
 
       const issues = await adapter.listIssues({ installationId, owner, repo, state: 'all' });
 
@@ -224,9 +214,9 @@ export class IssuesService {
   }
 
   private async setState(orgId: string, issueId: string, state: 'open' | 'closed'): Promise<void> {
-    const adapter = await this.getAdapter();
     await withTenant(orgId, async (client) => {
       const ref = await this.loadGithubRef(client, issueId);
+      const adapter = await buildGithubAdapterForInstallation(client, ref.installationId);
       await adapter.setIssueState({
         installationId: ref.installationId,
         owner: ref.owner,

@@ -48,7 +48,7 @@ export function Header({ name, avatarUrl, role }: HeaderProps) {
             <div className="role">{role === 'admin' ? 'Admin' : 'Usuario'}</div>
           </div>
         </div>
-        <a className="logout-link" href="/api/auth/github/logout">
+        <a className="logout-link" href="/api/auth/logout">
           Salir
         </a>
       </div>

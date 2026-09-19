@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
 import { RolesGuard } from '../../common/roles.guard';
 import { Roles } from '../../common/roles.decorator';
@@ -7,18 +7,6 @@ import { SystemSettingsService, type SystemSettingsUpdateInput } from './system-
 @Controller('system-settings')
 export class SystemSettingsController {
   constructor(private readonly service: SystemSettingsService) {}
-
-  // Públicos a propósito: antes de configurar GitHub OAuth por primera vez, nadie
-  // puede loguearse todavía — bootstrap() se autobloquea apenas ya hay algo guardado.
-  @Get('status')
-  getStatus() {
-    return this.service.getStatus();
-  }
-
-  @Post('bootstrap')
-  bootstrap(@Body() body: SystemSettingsUpdateInput) {
-    return this.service.bootstrap(body);
-  }
 
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)

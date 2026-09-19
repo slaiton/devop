@@ -12,12 +12,14 @@ export class GithubWebhooksController {
     @Req() req: RawBodyRequest<Request>,
     @Headers('x-hub-signature-256') signature: string | undefined,
     @Headers('x-github-event') event: string | undefined,
+    @Headers('x-github-hook-installation-target-id') githubAppId: string | undefined,
     @Body() body: Record<string, unknown>,
   ): Promise<{ received: true }> {
-    if (!req.rawBody || !(await this.service.verifySignature(req.rawBody, signature))) {
-      throw new UnauthorizedException('invalid webhook signature');
+    const ctx = req.rawBody && (await this.service.verifyAndResolve(req.rawBody, signature, githubAppId));
+    if (!ctx) {
+      throw new UnauthorizedException('invalid webhook signature or unknown GitHub App');
     }
-    await this.service.handleEvent(event ?? 'unknown', body);
+    await this.service.handleEvent(event ?? 'unknown', body, ctx);
     return { received: true };
   }
 }

@@ -2,9 +2,8 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import type { PoolClient } from 'pg';
-import { getPool, withTenant } from '@devsentinel/database';
-import { GithubAdapter } from '@devsentinel/git-providers';
-import { getSystemSettings } from '@devsentinel/settings';
+import { withTenant } from '@devsentinel/database';
+import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import { RECONSIDER_QUEUE_NAME, type ReconsiderJobPayload } from '@devsentinel/event-contracts';
 import { EmailService } from '../../common/email.service';
 
@@ -21,15 +20,6 @@ export class DashboardService {
     private readonly emailService: EmailService,
     @InjectQueue(RECONSIDER_QUEUE_NAME) private readonly reconsiderQueue: Queue<ReconsiderJobPayload>,
   ) {}
-
-  private async getAdapter(): Promise<GithubAdapter> {
-    const settings = await getSystemSettings(getPool());
-    return new GithubAdapter({
-      appId: settings?.githubAppId ?? '',
-      privateKey: (settings?.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
-      webhookSecret: settings?.githubAppWebhookSecret ?? '',
-    });
-  }
 
   /** admin ve todos los repos de la org; un usuario ("user") solo los que tiene
    * asignados en repository_members. Incluye la última interacción (push/PR analizado
@@ -419,7 +409,7 @@ export class DashboardService {
 
       const [owner, repo] = String(run.full_name).split('/');
       const installationId = Number(run.installation_id);
-      const adapter = await this.getAdapter();
+      const adapter = await buildGithubAdapterForInstallation(client, installationId);
 
       return run.github_pr_number
         ? adapter.getPullRequestDiff({ installationId, owner, repo, pullNumber: run.github_pr_number })

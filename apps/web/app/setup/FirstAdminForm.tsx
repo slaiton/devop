@@ -1,15 +1,17 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
+import { useRouter } from 'next/navigation';
 
 export function FirstAdminForm() {
-  const [githubAccountLogin, setGithubAccountLogin] = useState('');
+  const router = useRouter();
+  const [organizationSlug, setOrganizationSlug] = useState('');
   const [organizationName, setOrganizationName] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
   const [adminName, setAdminName] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -19,13 +21,13 @@ export function FirstAdminForm() {
       const res = await fetch('/api/users/bootstrap-first-admin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ githubAccountLogin, organizationName, adminEmail, adminName }),
+        body: JSON.stringify({ organizationSlug, organizationName, adminEmail, adminName, adminPassword }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.message ?? `error ${res.status}`);
       }
-      setDone(true);
+      router.push('/');
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -33,26 +35,12 @@ export function FirstAdminForm() {
     }
   }
 
-  if (done) {
-    return (
-      <p className="status-ok">
-        Organización y primer admin registrados. Ahora instala la GitHub App en{' '}
-        <code>{githubAccountLogin}</code> e inicia sesión con esa cuenta desde la página principal.
-      </p>
-    );
-  }
-
   return (
     <form onSubmit={handleSubmit}>
-      <p style={{ color: 'var(--ink-muted)' }}>
-        La cuenta u organización de GitHub debe coincidir EXACTAMENTE con donde vas a instalar la App —
-        si no coincide, la instalación creará una organización aparte y el admin registrado aquí no verá
-        sus repos.
-      </p>
       <p>
         <label>
-          Cuenta u organización de GitHub (ej: <code>tu-usuario</code> o <code>tu-organizacion</code>):
-          <input value={githubAccountLogin} onChange={(e) => setGithubAccountLogin(e.target.value)} required />
+          Identificador de la organización (slug, ej: <code>mi-empresa</code>):
+          <input value={organizationSlug} onChange={(e) => setOrganizationSlug(e.target.value)} required />
         </label>
       </p>
       <p>
@@ -63,7 +51,7 @@ export function FirstAdminForm() {
       </p>
       <p>
         <label>
-          Correo del primer admin (debe coincidir con el correo público de su cuenta de GitHub):
+          Correo del primer admin:
           <input type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} required />
         </label>
       </p>
@@ -71,6 +59,18 @@ export function FirstAdminForm() {
         <label>
           Nombre del primer admin (opcional):
           <input value={adminName} onChange={(e) => setAdminName(e.target.value)} />
+        </label>
+      </p>
+      <p>
+        <label>
+          Contraseña (mínimo 8 caracteres):
+          <input
+            type="password"
+            value={adminPassword}
+            onChange={(e) => setAdminPassword(e.target.value)}
+            minLength={8}
+            required
+          />
         </label>
       </p>
       <button type="submit" disabled={loading}>

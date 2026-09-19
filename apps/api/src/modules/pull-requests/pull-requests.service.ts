@@ -1,8 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
-import { getPool, withTenant } from '@devsentinel/database';
-import { GithubAdapter } from '@devsentinel/git-providers';
-import { getSystemSettings } from '@devsentinel/settings';
+import { withTenant } from '@devsentinel/database';
+import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import { buildPullRequestContent } from '@devsentinel/pr-content';
 
 interface Actor {
@@ -12,17 +11,7 @@ interface Actor {
 
 @Injectable()
 export class PullRequestsService {
-  private async getAdapter(): Promise<GithubAdapter> {
-    const settings = await getSystemSettings(getPool());
-    return new GithubAdapter({
-      appId: settings?.githubAppId ?? '',
-      privateKey: (settings?.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
-      webhookSecret: settings?.githubAppWebhookSecret ?? '',
-    });
-  }
-
   async createFromPush(orgId: string, repositoryId: string, reviewRunId: string) {
-    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `SELECT rr.commit_sha, rr.branch, rr.trigger, rr.status, rr.gate_decision, rr.quality_score,
@@ -44,6 +33,7 @@ export class PullRequestsService {
 
       const [owner, repo] = String(run.full_name).split('/');
       const installationId = Number(run.installation_id);
+      const adapter = await buildGithubAdapterForInstallation(client, installationId);
       const base = run.promotion_target_branch;
 
       const { rows: findingRows } = await client.query(
@@ -142,10 +132,10 @@ export class PullRequestsService {
   }
 
   async getStatus(orgId: string, pullRequestId: string, actor: Actor) {
-    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { installationId, owner, repo, pr } = await this.loadGithubRef(client, pullRequestId);
       await this.assertCanView(client, pr, actor);
+      const adapter = await buildGithubAdapterForInstallation(client, installationId);
       return adapter.getPullRequestStatus({ installationId, owner, repo, pullNumber: pr.github_pr_number });
     });
   }
@@ -177,9 +167,9 @@ export class PullRequestsService {
   }
 
   async validateMerge(orgId: string, pullRequestId: string): Promise<{ canMerge: boolean; reasons: string[] }> {
-    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { installationId, owner, repo, pr } = await this.loadGithubRef(client, pullRequestId);
+      const adapter = await buildGithubAdapterForInstallation(client, installationId);
       const reasons: string[] = [];
 
       if (pr.status !== 'open') reasons.push(`el PR ya está ${pr.status}`);
@@ -219,9 +209,9 @@ export class PullRequestsService {
       throw new BadRequestException(`no se puede mergear: ${reasons.join('; ')}`);
     }
 
-    const adapter = await this.getAdapter();
     return withTenant(orgId, async (client) => {
       const { installationId, owner, repo, pr } = await this.loadGithubRef(client, pullRequestId);
+      const adapter = await buildGithubAdapterForInstallation(client, installationId);
       const result = await adapter.mergePullRequest({ installationId, owner, repo, pullNumber: pr.github_pr_number });
       await client.query(`UPDATE pull_requests SET status = 'merged', merged_at = now() WHERE id = $1`, [pullRequestId]);
       return result;

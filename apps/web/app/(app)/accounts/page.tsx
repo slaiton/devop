@@ -60,8 +60,10 @@ export default async function AccountsPage() {
         </table>
       )}
 
-      <p>
-        <a href="/api/auth/github/link-account">Conectar otra cuenta de GitHub</a>
+      <p className="hint">
+        La gestión de GitHub Apps conectadas se está migrando a <code>/accounts</code> con soporte para
+        múltiples Apps por organización — por ahora, contactá a un administrador de infraestructura para
+        conectar una cuenta nueva.
       </p>
     </>
   );

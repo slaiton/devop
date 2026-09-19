@@ -3,9 +3,14 @@ import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { GithubAdapter } from '@devsentinel/git-providers';
 import { getPool, withTenant } from '@devsentinel/database';
-import { getSystemSettings } from '@devsentinel/settings';
+import { decrypt } from '@devsentinel/settings';
 import { REVIEW_QUEUE_NAME, type ReviewJobPayload } from '@devsentinel/event-contracts';
 import { IssuesSyncService } from './issuesSync.service';
+
+export interface WebhookAppContext {
+  organizationId: string;
+  githubAppRowId: string;
+}
 
 @Injectable()
 export class GithubWebhooksService {
@@ -14,32 +19,48 @@ export class GithubWebhooksService {
     private readonly issuesSync: IssuesSyncService,
   ) {}
 
-  async verifySignature(rawBody: Buffer, signature: string | undefined): Promise<boolean> {
-    const settings = await getSystemSettings(getPool());
-    if (!settings?.githubAppWebhookSecret) return false;
-    const adapter = new GithubAdapter({
-      appId: settings.githubAppId ?? '',
-      privateKey: (settings.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
-      webhookSecret: settings.githubAppWebhookSecret,
-    });
-    return adapter.verifyWebhookSignature(rawBody, signature);
+  /** Resuelve QUÉ GitHub App envió este webhook a partir del App ID que GitHub manda
+   * en el header `X-GitHub-Hook-Installation-Target-ID`, y solo entonces verifica la
+   * firma HMAC con el secret de ESA App — nunca al revés, para no aceptar un payload
+   * antes de saber con qué secret validarlo. `github_apps` tiene RLS, así que resolver
+   * organización + secret sin conocer el tenant exige la función SECURITY DEFINER
+   * `resolve_github_app` (migración 0025, mismo patrón que
+   * `resolve_organization_for_installation`). */
+  async verifyAndResolve(
+    rawBody: Buffer,
+    signature: string | undefined,
+    githubAppId: string | undefined,
+  ): Promise<WebhookAppContext | null> {
+    if (!githubAppId) return null;
+    const { rows } = await getPool().query(
+      'SELECT organization_id, id, webhook_secret_encrypted FROM resolve_github_app($1)',
+      [githubAppId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+
+    const webhookSecret = decrypt(row.webhook_secret_encrypted);
+    const adapter = new GithubAdapter({ appId: githubAppId, privateKey: '', webhookSecret });
+    if (!adapter.verifyWebhookSignature(rawBody, signature)) return null;
+
+    return { organizationId: row.organization_id as string, githubAppRowId: row.id as string };
   }
 
-  async handleEvent(event: string, payload: any): Promise<void> {
+  async handleEvent(event: string, payload: any, ctx: WebhookAppContext): Promise<void> {
     switch (event) {
       case 'installation':
-        if (payload.action === 'created') await this.handleInstallationCreated(payload);
-        if (payload.action === 'deleted') await this.handleInstallationDeleted(payload);
+        if (payload.action === 'created') await this.handleInstallationCreated(payload, ctx);
+        if (payload.action === 'deleted') await this.handleInstallationDeleted(payload, ctx);
         return;
       case 'installation_repositories':
-        await this.handleInstallationRepositories(payload);
+        await this.handleInstallationRepositories(payload, ctx);
         return;
       case 'push':
-        await this.handlePush(payload);
+        await this.handlePush(payload, ctx);
         return;
       case 'pull_request':
         if (['opened', 'synchronize', 'reopened'].includes(payload.action)) {
-          await this.handlePullRequest(payload);
+          await this.handlePullRequest(payload, ctx);
         }
         return;
       case 'issues':
@@ -53,48 +74,42 @@ export class GithubWebhooksService {
     }
   }
 
-  private async handleInstallationCreated(payload: any): Promise<void> {
+  private async handleInstallationCreated(payload: any, ctx: WebhookAppContext): Promise<void> {
     const accountLogin: string = payload.installation.account.login;
     const installationId: number = payload.installation.id;
-    const orgId = await this.ensureOrganization(accountLogin);
 
-    await withTenant(orgId, async (client) => {
+    await withTenant(ctx.organizationId, async (client) => {
       await client.query(
-        `INSERT INTO github_installations (organization_id, installation_id, account_login)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (installation_id) DO UPDATE SET status = 'active'`,
-        [orgId, installationId, accountLogin],
+        `INSERT INTO github_installations (organization_id, installation_id, account_login, github_app_id)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (installation_id) DO UPDATE SET status = 'active', github_app_id = $4`,
+        [ctx.organizationId, installationId, accountLogin, ctx.githubAppRowId],
       );
     });
 
     const repos: any[] = payload.repositories ?? [];
-    await this.upsertRepositories(orgId, installationId, repos);
+    await this.upsertRepositories(ctx.organizationId, installationId, repos);
   }
 
-  private async handleInstallationDeleted(payload: any): Promise<void> {
+  private async handleInstallationDeleted(payload: any, ctx: WebhookAppContext): Promise<void> {
     const installationId: number = payload.installation.id;
-    const orgId = await this.getOrgIdByInstallation(installationId);
-    if (!orgId) return;
-    await withTenant(orgId, async (client) => {
+    await withTenant(ctx.organizationId, async (client) => {
       await client.query(`UPDATE github_installations SET status = 'revoked' WHERE installation_id = $1`, [
         installationId,
       ]);
     });
   }
 
-  private async handleInstallationRepositories(payload: any): Promise<void> {
+  private async handleInstallationRepositories(payload: any, ctx: WebhookAppContext): Promise<void> {
     const installationId: number = payload.installation.id;
-    const orgId = await this.getOrgIdByInstallation(installationId);
-    if (!orgId) return;
     const added: any[] = payload.repositories_added ?? [];
-    await this.upsertRepositories(orgId, installationId, added);
+    await this.upsertRepositories(ctx.organizationId, installationId, added);
   }
 
-  private async handlePush(payload: any): Promise<void> {
+  private async handlePush(payload: any, ctx: WebhookAppContext): Promise<void> {
     const installationId: number | undefined = payload.installation?.id;
     if (!installationId) return;
-    const orgId = await this.getOrgIdByInstallation(installationId);
-    if (!orgId) return;
+    const orgId = ctx.organizationId;
 
     const [owner, repo] = String(payload.repository.full_name).split('/');
     const repository = await this.getRepositoryForPush(orgId, payload.repository.id);
@@ -134,11 +149,10 @@ export class GithubWebhooksService {
     });
   }
 
-  private async handlePullRequest(payload: any): Promise<void> {
+  private async handlePullRequest(payload: any, ctx: WebhookAppContext): Promise<void> {
     const installationId: number | undefined = payload.installation?.id;
     if (!installationId) return;
-    const orgId = await this.getOrgIdByInstallation(installationId);
-    if (!orgId) return;
+    const orgId = ctx.organizationId;
 
     const [owner, repo] = String(payload.repository.full_name).split('/');
     const repositoryId = await this.getRepositoryId(orgId, payload.repository.id);
@@ -213,26 +227,6 @@ export class GithubWebhooksService {
       );
       return rows[0]?.id ?? null;
     });
-  }
-
-  private async ensureOrganization(accountLogin: string): Promise<string> {
-    const slug = accountLogin.toLowerCase();
-    const existing = await getPool().query('SELECT id FROM organizations WHERE slug = $1', [slug]);
-    if (existing.rows[0]) return existing.rows[0].id;
-    const created = await getPool().query(`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id`, [
-      accountLogin,
-      slug,
-    ]);
-    return created.rows[0].id;
-  }
-
-  /** github_installations tiene RLS; antes de conocer el tenant solo se puede
-   * resolver vía la función SECURITY DEFINER creada en la migración 0006. */
-  private async getOrgIdByInstallation(installationId: number): Promise<string | null> {
-    const { rows } = await getPool().query('SELECT resolve_organization_for_installation($1) AS organization_id', [
-      installationId,
-    ]);
-    return rows[0]?.organization_id ?? null;
   }
 
   private async getRepositoryId(orgId: string, githubRepoId: number): Promise<string | null> {

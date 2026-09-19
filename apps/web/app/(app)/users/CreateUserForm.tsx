@@ -8,6 +8,7 @@ export function CreateUserForm() {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [role, setRole] = useState<'admin' | 'user'>('user');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,7 +20,7 @@ export function CreateUserForm() {
       const res = await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), name: name.trim() || undefined, role }),
+        body: JSON.stringify({ email: email.trim(), name: name.trim() || undefined, role, password }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -28,6 +29,7 @@ export function CreateUserForm() {
       setEmail('');
       setName('');
       setRole('user');
+      setPassword('');
       router.refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -55,6 +57,19 @@ export function CreateUserForm() {
             <option value="user">Usuario</option>
             <option value="admin">Admin</option>
           </select>
+        </label>
+      </p>
+      <p>
+        <label>
+          Contraseña (mínimo 8 caracteres):
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            minLength={8}
+            required
+          />
         </label>
       </p>
       <button type="submit" disabled={loading}>

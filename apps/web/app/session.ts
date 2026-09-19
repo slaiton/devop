@@ -12,7 +12,7 @@ export interface Session {
 
 export async function getSession(): Promise<Session | null> {
   const cookieHeader = cookies().toString();
-  const res = await fetch(`${process.env.API_INTERNAL_URL}/api/auth/github/me`, {
+  const res = await fetch(`${process.env.API_INTERNAL_URL}/api/auth/me`, {
     headers: { Cookie: cookieHeader },
     cache: 'no-store',
   });

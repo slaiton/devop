@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getSession } from '../../session';
 import { GateBadge } from '../../GateBadge';
+import { ChangePasswordForm } from '../../components/ChangePasswordForm';
 
 interface MyProfile {
   developer_id: string | null;
@@ -45,8 +46,8 @@ export default async function MyProfilePage() {
   if (!session) {
     return (
       <>
-        <p>Conecta tu cuenta de GitHub para ver tu perfil.</p>
-        <a href="/api/auth/github/login">Iniciar sesión con GitHub</a>
+        <p>Iniciá sesión para ver tu perfil.</p>
+        <Link href="/">Ir al login</Link>
       </>
     );
   }
@@ -70,6 +71,11 @@ export default async function MyProfilePage() {
           <span className="chip">NO APTO: {profile.no_apto_count}</span>
           <span className="chip">Score promedio: {profile.avg_quality_score ?? '-'}</span>
         </p>
+      </div>
+
+      <h1>Cambiar mi contraseña</h1>
+      <div className="card">
+        <ChangePasswordForm />
       </div>
 
       <h1>Mis pulls, commits y retroalimentación</h1>

@@ -1,12 +1,8 @@
-import { BadRequestException, Controller, ForbiddenException, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
-import type { Request, Response } from 'express';
-import { randomBytes } from 'crypto';
-import { verify } from 'jsonwebtoken';
+import { Body, Controller, Get, Post, Res, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
 import { getPool } from '@devsentinel/database';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
-import { RolesGuard } from '../../common/roles.guard';
-import { Roles } from '../../common/roles.decorator';
 import { CurrentOrg } from '../../common/currentOrg.decorator';
 import { CurrentUser } from '../../common/currentUser.decorator';
 
@@ -14,20 +10,27 @@ import { CurrentUser } from '../../common/currentUser.decorator';
 // navegador las descarta en silencio si quedan marcadas secure sobre HTTP plano.
 const COOKIES_REQUIRE_HTTPS = (process.env.PUBLIC_WEB_ORIGIN ?? '').startsWith('https://');
 
-@Controller('auth/github')
+@Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Get('login')
-  async login(@Res() res: Response): Promise<void> {
-    const state = randomBytes(16).toString('hex');
-    res.cookie('oauth_state', state, {
+  @Post('login')
+  async login(@Body() body: { email: string; password: string }, @Res() res: Response): Promise<void> {
+    const { userId } = await this.authService.login(body.email ?? '', body.password ?? '');
+    const organizationId = await this.authService.findOrganizationForUser(userId);
+    if (!organizationId) {
+      res.status(403).json({ message: 'tu usuario no tiene una organización asignada — contacta a un administrador' });
+      return;
+    }
+
+    const token = this.authService.issueSessionToken(userId, organizationId);
+    res.cookie('session', token, {
       httpOnly: true,
       sameSite: 'lax',
       secure: COOKIES_REQUIRE_HTTPS,
-      maxAge: 5 * 60 * 1000,
+      maxAge: 4 * 60 * 60 * 1000, // igual al expiresIn del JWT (issueSessionToken)
     });
-    res.redirect(await this.authService.buildAuthorizeUrl(state));
+    res.json({ ok: true });
   }
 
   @Get('logout')
@@ -36,92 +39,14 @@ export class AuthController {
     res.redirect(process.env.PUBLIC_WEB_ORIGIN ?? '/');
   }
 
-  @Get('link-account')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
-  async linkAccount(@CurrentOrg() orgId: string, @Res() res: Response): Promise<void> {
-    res.redirect(await this.authService.buildLinkAccountUrl(orgId));
-  }
-
-  @Get('callback')
-  async callback(
-    @Query('code') code: string,
-    @Query('state') state: string | undefined,
-    @Query('setup_action') setupAction: string | undefined,
-    @Query('installation_id') installationId: string | undefined,
-    @Req() req: Request,
-    @Res() res: Response,
-  ): Promise<void> {
-    // Camino de "conectar otra cuenta de GitHub": el admin ya está logueado y solo
-    // queremos ligar esta instalación nueva a su organización — no hay usuario que
-    // autenticar ni `code` que canjear.
-    if (state && installationId) {
-      const linkPayload = this.tryDecodeLinkToken(state);
-      if (linkPayload) {
-        await this.authService.linkInstallation(linkPayload.orgId, Number(installationId));
-        res.redirect(`${process.env.PUBLIC_WEB_ORIGIN ?? ''}/accounts`);
-        return;
-      }
-    }
-
-    // GitHub omite `state` cuando el callback llega desde la pantalla de
-    // instalación/actualización de la App (setup_action=install|update) en vez
-    // del /login/oauth/authorize que nosotros iniciamos; ahí no hay CSRF que
-    // validar porque el `code` de un solo uso ya ata la respuesta a nuestro
-    // client_secret.
-    const isInstallSetup = setupAction === 'install' || setupAction === 'update';
-    if (!code || (!isInstallSetup && (!state || state !== req.cookies?.oauth_state))) {
-      throw new BadRequestException('invalid OAuth state');
-    }
-    res.clearCookie('oauth_state');
-
-    let githubUser;
-    try {
-      githubUser = await this.authService.exchangeCodeForUser(code);
-    } catch (err) {
-      throw new BadRequestException((err as Error).message);
-    }
-
-    let userId: string;
-    try {
-      userId = await this.authService.resolveRegisteredUser(githubUser);
-    } catch (err) {
-      if (err instanceof ForbiddenException) {
-        res.redirect(`${process.env.PUBLIC_WEB_ORIGIN ?? ''}/?login_error=${encodeURIComponent(err.message)}`);
-        return;
-      }
-      throw err;
-    }
-
-    // Camino 1: viene de instalar la App en una cuenta cuya organización todavía no
-    // tiene ningún admin (organización nueva) → se vuelve admin. Camino 2: ya es
-    // miembro (se registró desde /users, o es el primer admin de /setup). Si ninguno
-    // aplica, no está registrado en ninguna organización.
-    let organizationId: string | null = null;
-    if (isInstallSetup && installationId) {
-      organizationId = await this.authService.bootstrapFirstAdminForInstallation(Number(installationId), userId);
-    }
-    if (!organizationId) {
-      organizationId = await this.authService.findOrganizationForUser(userId);
-    }
-
-    if (!organizationId) {
-      res.redirect(
-        `${process.env.PUBLIC_WEB_ORIGIN ?? ''}/?login_error=${encodeURIComponent('tu usuario no tiene una organización asignada — contacta a un administrador')}`,
-      );
-      return;
-    }
-
-    await this.authService.linkDeveloperRecords(organizationId, userId, githubUser.login, githubUser.email);
-    const token = this.authService.issueSessionToken(userId, organizationId);
-
-    res.cookie('session', token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: COOKIES_REQUIRE_HTTPS,
-      maxAge: 4 * 60 * 60 * 1000, // igual al expiresIn del JWT (issueSessionToken)
-    });
-    res.redirect(process.env.PUBLIC_WEB_ORIGIN ?? '/');
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  async changePassword(
+    @CurrentUser() userId: string,
+    @Body() body: { currentPassword: string; newPassword: string },
+  ): Promise<{ ok: true }> {
+    await this.authService.changePassword(userId, body.currentPassword ?? '', body.newPassword ?? '');
+    return { ok: true };
   }
 
   @Get('me')
@@ -129,7 +54,7 @@ export class AuthController {
   async me(@CurrentOrg() orgId: string, @CurrentUser() userId: string) {
     const role = await this.authService.getMembershipRole(orgId, userId);
     const [{ rows: userRows }, { rows: orgRows }] = await Promise.all([
-      getPool().query('SELECT name, avatar_url, email, github_user_id FROM users WHERE id = $1', [userId]),
+      getPool().query('SELECT name, avatar_url, email FROM users WHERE id = $1', [userId]),
       getPool().query('SELECT name FROM organizations WHERE id = $1', [orgId]),
     ]);
     const user = userRows[0];
@@ -142,17 +67,5 @@ export class AuthController {
       email: user?.email ?? null,
       orgName: orgRows[0]?.name ?? null,
     };
-  }
-
-  private tryDecodeLinkToken(state: string): { orgId: string } | null {
-    try {
-      const payload = verify(state, process.env.JWT_SECRET ?? '') as any;
-      if (payload?.purpose === 'link-installation' && payload?.orgId) {
-        return { orgId: payload.orgId };
-      }
-      return null;
-    } catch {
-      return null;
-    }
   }
 }

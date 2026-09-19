@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { getPool, withTenant } from '@devsentinel/database';
-import { GithubAdapter } from '@devsentinel/git-providers';
+import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import { OpenAiCompatibleLlmAdapter, embedLocally } from '@devsentinel/llm-port';
 import { getSystemSettings } from '@devsentinel/settings';
 import type { ReconsiderJobPayload } from '@devsentinel/event-contracts';
@@ -21,11 +21,6 @@ export class ReconsiderService {
 
   async process(payload: ReconsiderJobPayload): Promise<void> {
     const settings = await getSystemSettings(getPool());
-    const gitAdapter = new GithubAdapter({
-      appId: settings?.githubAppId ?? '',
-      privateKey: (settings?.githubAppPrivateKey ?? '').replace(/\\n/g, '\n'),
-      webhookSecret: settings?.githubAppWebhookSecret ?? '',
-    });
     const llm = new OpenAiCompatibleLlmAdapter(
       settings?.llmModel ?? '',
       settings?.llmProviderBaseUrl ?? '',
@@ -59,6 +54,7 @@ export class ReconsiderService {
 
       const [owner, repo] = String(run.full_name).split('/');
       const installationId = Number(run.installation_id);
+      const gitAdapter = await buildGithubAdapterForInstallation(client, installationId);
 
       const diff = run.github_pr_number
         ? await gitAdapter.getPullRequestDiff({ installationId, owner, repo, pullNumber: run.github_pr_number })

@@ -9,11 +9,25 @@ import { UsersService } from './users.service';
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
-  // Público a propósito, igual que system-settings/bootstrap: solo funciona una vez,
-  // mientras no exista ninguna organización todavía.
+  // Público a propósito: /setup y la pantalla de login lo consultan para decidir si
+  // mostrar el formulario de primer admin o el login normal.
+  @Get('bootstrap-status')
+  async bootstrapStatus() {
+    return { configured: await this.usersService.hasAnyOrganization() };
+  }
+
+  // Público a propósito, igual que bootstrap-status: solo funciona una vez, mientras
+  // no exista ninguna organización todavía.
   @Post('bootstrap-first-admin')
   bootstrapFirstAdmin(
-    @Body() body: { githubAccountLogin: string; organizationName?: string; adminEmail: string; adminName?: string },
+    @Body()
+    body: {
+      organizationSlug: string;
+      organizationName?: string;
+      adminEmail: string;
+      adminName?: string;
+      adminPassword: string;
+    },
   ) {
     return this.usersService.bootstrapFirstAdmin(body);
   }
@@ -28,14 +42,18 @@ export class UsersController {
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
-  create(@CurrentOrg() orgId: string, @Body() body: { email: string; name?: string; role: string }) {
+  create(@CurrentOrg() orgId: string, @Body() body: { email: string; name?: string; role: string; password: string }) {
     return this.usersService.create(orgId, body);
   }
 
   @Patch(':userId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
-  update(@CurrentOrg() orgId: string, @Param('userId') userId: string, @Body() body: { name?: string; role?: string }) {
+  update(
+    @CurrentOrg() orgId: string,
+    @Param('userId') userId: string,
+    @Body() body: { name?: string; role?: string; password?: string },
+  ) {
     return this.usersService.update(orgId, userId, body);
   }
 

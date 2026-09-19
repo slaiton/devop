@@ -2,7 +2,8 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getSession } from './session';
 import { AppShell } from './components/AppShell';
-import { GithubMarkIcon, RepoGlyphIcon, ShieldIcon, AlertCircleIcon, CheckIcon, CrossIcon, WarnTriangleIcon } from './components/icons';
+import { LoginForm } from './components/LoginForm';
+import { RepoGlyphIcon, ShieldIcon, CheckIcon, CrossIcon, WarnTriangleIcon } from './components/icons';
 
 interface Repository {
   id: string;
@@ -37,7 +38,7 @@ async function fetchJson<T>(path: string): Promise<T> {
 }
 
 async function fetchSetupStatus(): Promise<{ configured: boolean }> {
-  const res = await fetch(`${process.env.API_INTERNAL_URL}/api/system-settings/status`, { cache: 'no-store' });
+  const res = await fetch(`${process.env.API_INTERNAL_URL}/api/users/bootstrap-status`, { cache: 'no-store' });
   if (!res.ok) return { configured: true }; // ante la duda, no invitar a re-configurar
   return res.json();
 }
@@ -72,9 +73,8 @@ const AVATAR_GRADIENTS = [
   'linear-gradient(155deg,#8891a6,#5b6376)',
 ];
 
-export default async function HomePage({ searchParams }: { searchParams: Promise<{ login_error?: string }> }) {
+export default async function HomePage() {
   const session = await getSession();
-  const { login_error: loginError } = await searchParams;
 
   if (!session) {
     const { configured } = await fetchSetupStatus();
@@ -87,8 +87,8 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
               <ShieldIcon />
             </div>
             <h1>DevSentinel AI</h1>
-            <p className="tagline">Este despliegue todavía no tiene la GitHub App configurada.</p>
-            <Link href="/setup" className="btn-github" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>
+            <p className="tagline">Este despliegue todavía no tiene una organización configurada.</p>
+            <Link href="/setup" className="btn-primary">
               Configurar DevSentinel AI
             </Link>
           </div>
@@ -106,24 +106,12 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
           <p className="tagline">
             Revisión de código con IA y gestión de Git sin fricción.
             <br />
-            Iniciá sesión con tu cuenta de GitHub para continuar.
+            Iniciá sesión con tu correo y contraseña para continuar.
           </p>
 
-          {loginError && (
-            <div className="login-error">
-              <AlertCircleIcon width={15} height={15} />
-              <span>{loginError}</span>
-            </div>
-          )}
-
-          <a className="btn-github" href="/api/auth/github/login">
-            <GithubMarkIcon />
-            Iniciar sesión con GitHub
-          </a>
+          <LoginForm />
 
           <p className="login-fine">
-            Al continuar, autorizás a DevSentinel AI a verificar tu identidad de GitHub.
-            <br />
             ¿Problemas para entrar? Pedile a un administrador que te registre desde Usuarios.
           </p>
         </div>

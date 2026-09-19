@@ -50,8 +50,10 @@ export function UserRow({
   const [expanded, setExpanded] = useState(false);
   const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set(user.repositories.map((r) => r.id)));
   const [linkDeveloperId, setLinkDeveloperId] = useState(unlinkedDevelopers[0]?.id ?? '');
+  const [newPassword, setNewPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [passwordReset, setPasswordReset] = useState(false);
 
   async function run(fn: () => Promise<any>) {
     setLoading(true);
@@ -116,6 +118,37 @@ export function UserRow({
           {expanded ? 'Ocultar accesos' : 'Gestionar repos y developer'}
         </button>
       </p>
+
+      {expanded && (
+        <p>
+          <label>
+            Restablecer contraseña:
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => {
+                setNewPassword(e.target.value);
+                setPasswordReset(false);
+              }}
+              placeholder="nueva contraseña (mínimo 8 caracteres)"
+              minLength={8}
+            />
+          </label>{' '}
+          <button
+            disabled={loading || newPassword.length < 8}
+            onClick={() =>
+              run(async () => {
+                await call(`/api/users/${user.user_id}`, 'PATCH', { password: newPassword });
+                setNewPassword('');
+                setPasswordReset(true);
+              })
+            }
+          >
+            Guardar contraseña
+          </button>{' '}
+          {passwordReset && <span className="status-ok">Contraseña actualizada</span>}
+        </p>
+      )}
 
       {expanded && (
         <div>

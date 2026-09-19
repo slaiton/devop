@@ -23,7 +23,10 @@ export default async function SettingsPage() {
   return (
     <>
       <h1>Configuración del sistema</h1>
-      <p>GitHub App, proveedor LLM y SMTP — antes vivían en el <code>.env</code> del servidor.</p>
+      <p>
+        Proveedor LLM y SMTP — antes vivían en el <code>.env</code> del servidor. Las GitHub Apps se
+        gestionan aparte, desde <code>/accounts</code>.
+      </p>
       <SystemSettingsForm endpoint="/api/system-settings" method="PATCH" initial={settings} />
     </>
   );
