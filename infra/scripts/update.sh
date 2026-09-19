@@ -21,7 +21,7 @@ echo "────────────────────────�
 # Variables críticas — mismas que exige deploy.sh
 REQUIRED_VARS=(
   POSTGRES_PASSWORD APP_DB_PASSWORD DATABASE_URL MIGRATIONS_DATABASE_URL
-  JWT_SECRET CONFIG_ENCRYPTION_KEY GITHUB_OAUTH_CALLBACK_URL
+  JWT_SECRET CONFIG_ENCRYPTION_KEY
   PUBLIC_DOMAIN PUBLIC_WEB_ORIGIN
 )
 # GitHub App, LLM y SMTP ya no van aquí — se configuran desde /setup o /settings

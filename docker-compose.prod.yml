@@ -5,12 +5,12 @@
 #
 # Variables obligatorias (definir en el entorno del host o en un .env.prod):
 #   POSTGRES_PASSWORD, APP_DB_PASSWORD, DATABASE_URL, MIGRATIONS_DATABASE_URL
-#   JWT_SECRET, CONFIG_ENCRYPTION_KEY, GITHUB_OAUTH_CALLBACK_URL,
-#   PUBLIC_DOMAIN, PUBLIC_WEB_ORIGIN
+#   JWT_SECRET, CONFIG_ENCRYPTION_KEY, PUBLIC_DOMAIN, PUBLIC_WEB_ORIGIN
 #
-# GitHub App, LLM y SMTP ya NO se configuran aquí — se cargan desde /setup (primera
-# vez) o /settings (ya logueado como admin), guardados cifrados en la tabla
-# system_settings.
+# El login es correo/contraseña contra la tabla `users` (no depende de GitHub). Las
+# GitHub Apps, LLM y SMTP ya NO se configuran aquí — se cargan desde /setup (primera
+# vez), /settings o /accounts (ya logueado como admin), guardados cifrados en
+# system_settings/github_apps.
 #
 # Para CI/CD con imágenes pre-construidas:
 #   IMAGE_REPO=ghcr.io/<org>  VERSION=<git-sha>
@@ -61,7 +61,6 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       JWT_SECRET: ${JWT_SECRET}
       CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY}
-      GITHUB_OAUTH_CALLBACK_URL: ${GITHUB_OAUTH_CALLBACK_URL}
       PUBLIC_WEB_ORIGIN: ${PUBLIC_WEB_ORIGIN}
     networks:
       - devsentinel_net

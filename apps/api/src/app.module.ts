@@ -7,6 +7,7 @@ import { PullRequestsModule } from './modules/pull-requests/pull-requests.module
 import { IssuesModule } from './modules/issues/issues.module';
 import { UsersModule } from './modules/users/users.module';
 import { SystemSettingsModule } from './modules/system-settings/system-settings.module';
+import { GithubAppsModule } from './modules/github-apps/github-apps.module';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
@@ -21,6 +22,7 @@ import { HealthModule } from './modules/health/health.module';
     IssuesModule,
     UsersModule,
     SystemSettingsModule,
+    GithubAppsModule,
     HealthModule,
   ],
 })

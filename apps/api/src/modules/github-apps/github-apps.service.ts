@@ -1,0 +1,181 @@
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { sign, verify } from 'jsonwebtoken';
+import { withTenant } from '@devsentinel/database';
+import { GithubAdapter } from '@devsentinel/git-providers';
+import { loadGithubAppCredentials } from '@devsentinel/github-apps';
+import { encrypt } from '@devsentinel/settings';
+
+export interface CreateGithubAppInput {
+  name: string;
+  githubAppId: string;
+  slug: string;
+  clientId: string;
+  clientSecret: string;
+  privateKey: string;
+  webhookSecret: string;
+}
+
+interface ConnectStatePayload {
+  purpose: 'connect-app';
+  orgId: string;
+  githubAppRowId: string;
+}
+
+const REQUIRED_FIELDS: (keyof CreateGithubAppInput)[] = [
+  'name',
+  'githubAppId',
+  'slug',
+  'clientId',
+  'clientSecret',
+  'privateKey',
+  'webhookSecret',
+];
+
+@Injectable()
+export class GithubAppsService {
+  async list(orgId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT ga.id, ga.name, ga.github_app_id, ga.slug, ga.client_id, ga.created_at,
+                COUNT(gi.id)::int AS installation_count
+         FROM github_apps ga
+         LEFT JOIN github_installations gi ON gi.github_app_id = ga.id AND gi.status = 'active'
+         WHERE ga.organization_id = $1
+         GROUP BY ga.id
+         ORDER BY ga.created_at`,
+        [orgId],
+      );
+      return rows;
+    });
+  }
+
+  async listInstallations(orgId: string, githubAppRowId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows: appRows } = await client.query('SELECT id FROM github_apps WHERE id = $1 AND organization_id = $2', [
+        githubAppRowId,
+        orgId,
+      ]);
+      if (!appRows[0]) throw new NotFoundException('GitHub App no encontrada');
+
+      const { rows } = await client.query(
+        `SELECT gi.id, gi.installation_id, gi.account_login, gi.status, gi.created_at,
+                (SELECT count(*)::int FROM repositories r WHERE r.github_installation_id = gi.id) AS repository_count
+         FROM github_installations gi
+         WHERE gi.organization_id = $1 AND gi.github_app_id = $2
+         ORDER BY gi.created_at DESC`,
+        [orgId, githubAppRowId],
+      );
+      return rows;
+    });
+  }
+
+  async create(orgId: string, input: CreateGithubAppInput) {
+    for (const field of REQUIRED_FIELDS) {
+      if (!input[field]?.trim()) {
+        throw new BadRequestException('todos los campos de la GitHub App son obligatorios');
+      }
+    }
+
+    try {
+      return await withTenant(orgId, async (client) => {
+        const { rows } = await client.query(
+          `INSERT INTO github_apps
+             (organization_id, name, github_app_id, slug, client_id, client_secret_encrypted, private_key_encrypted, webhook_secret_encrypted)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id, name, github_app_id, slug, client_id, created_at`,
+          [
+            orgId,
+            input.name.trim(),
+            input.githubAppId.trim(),
+            input.slug.trim(),
+            input.clientId.trim(),
+            encrypt(input.clientSecret.trim()),
+            encrypt(input.privateKey.trim()),
+            encrypt(input.webhookSecret.trim()),
+          ],
+        );
+        return { ...rows[0], installation_count: 0 };
+      });
+    } catch (err) {
+      if ((err as { code?: string })?.code === '23505') {
+        throw new BadRequestException('ya existe una GitHub App registrada con ese App ID');
+      }
+      throw err;
+    }
+  }
+
+  async remove(orgId: string, id: string): Promise<void> {
+    await withTenant(orgId, async (client) => {
+      const { rowCount } = await client.query('DELETE FROM github_apps WHERE organization_id = $1 AND id = $2', [
+        orgId,
+        id,
+      ]);
+      if (!rowCount) throw new NotFoundException('GitHub App no encontrada');
+    });
+  }
+
+  /** Arma la URL de instalación de GitHub para esta App, firmando un `state` de un solo
+   * uso (10 min) con el mismo secret que las sesiones (`JWT_SECRET`) — GitHub lo
+   * devuelve tal cual en el callback, y es la única forma de saber a qué
+   * organización/App atar la instalación resultante sin depender de que el navegador
+   * siga logueado en ese momento (mismo patrón que usaba el login por GitHub, ya
+   * retirado). */
+  async buildConnectUrl(orgId: string, githubAppRowId: string): Promise<string> {
+    const slug = await withTenant(orgId, async (client) => {
+      const { rows } = await client.query('SELECT slug FROM github_apps WHERE id = $1 AND organization_id = $2', [
+        githubAppRowId,
+        orgId,
+      ]);
+      if (!rows[0]) throw new NotFoundException('GitHub App no encontrada');
+      return rows[0].slug as string;
+    });
+
+    const state = sign({ purpose: 'connect-app', orgId, githubAppRowId } satisfies ConnectStatePayload, process.env.JWT_SECRET ?? '', {
+      expiresIn: '10m',
+    });
+    return `https://github.com/apps/${slug}/installations/new?state=${encodeURIComponent(state)}`;
+  }
+
+  /** Callback público (GitHub redirige el navegador acá tras la instalación, sin
+   * garantía de que la sesión de DevSentinel siga activa) — la autorización real viene
+   * del `state` firmado, no de la sesión. Nunca lanza: siempre devuelve a dónde
+   * redirigir, con el resultado codificado en la query string para que `/accounts`
+   * muestre un mensaje. */
+  async handleInstallCallback(state: string | undefined, installationId: number | undefined): Promise<{ redirectPath: string }> {
+    if (!state || !installationId || Number.isNaN(installationId)) {
+      return { redirectPath: '/accounts?link_error=missing_params' };
+    }
+
+    let payload: ConnectStatePayload;
+    try {
+      payload = verify(state, process.env.JWT_SECRET ?? '') as ConnectStatePayload;
+    } catch {
+      return { redirectPath: '/accounts?link_error=invalid_state' };
+    }
+    if (payload.purpose !== 'connect-app' || !payload.orgId || !payload.githubAppRowId) {
+      return { redirectPath: '/accounts?link_error=invalid_state' };
+    }
+
+    try {
+      await withTenant(payload.orgId, async (client) => {
+        const creds = await loadGithubAppCredentials(client, payload.githubAppRowId);
+        const adapter = new GithubAdapter({
+          appId: creds.appId,
+          privateKey: creds.privateKey,
+          webhookSecret: creds.webhookSecret,
+        });
+        const accountLogin = await adapter.getInstallationAccountLogin(installationId);
+        await client.query('SELECT link_installation_to_organization($1, $2, $3, $4)', [
+          installationId,
+          payload.orgId,
+          accountLogin,
+          payload.githubAppRowId,
+        ]);
+      });
+    } catch {
+      return { redirectPath: '/accounts?link_error=link_failed' };
+    }
+
+    return { redirectPath: '/accounts?connected=1' };
+  }
+}
