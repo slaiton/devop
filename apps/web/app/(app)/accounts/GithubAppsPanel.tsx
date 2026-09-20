@@ -21,6 +21,7 @@ interface InstallationRow {
   status: string;
   repository_count: number;
   created_at: string;
+  repos_synced_at: string | null;
 }
 
 const LINK_ERROR_MESSAGES: Record<string, string> = {
@@ -29,20 +30,35 @@ const LINK_ERROR_MESSAGES: Record<string, string> = {
   link_failed: 'No se pudo completar la conexión (revisá que las credenciales de la App sean correctas).',
 };
 
+function timeAgo(iso: string | null): string {
+  if (!iso) return 'nunca';
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return 'hace instantes';
+  if (min < 60) return `hace ${min} min`;
+  const hrs = Math.floor(min / 60);
+  if (hrs < 24) return `hace ${hrs} h`;
+  const days = Math.floor(hrs / 24);
+  return `hace ${days} d`;
+}
+
 export function GithubAppsPanel({
   apps,
   connected,
   linkError,
+  syncError,
 }: {
   apps: GithubAppRow[];
   connected: boolean;
   linkError: string | null;
+  syncError: boolean;
 }) {
   const router = useRouter();
   const [activeId, setActiveId] = useState<string | null>(apps[0]?.id ?? null);
   const [installations, setInstallations] = useState<Record<string, InstallationRow[]>>({});
   const [loadingInstallations, setLoadingInstallations] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -52,18 +68,23 @@ export function GithubAppsPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apps]);
 
-  useEffect(() => {
-    if (!activeId || installations[activeId]) return;
+  function loadInstallations(appId: string) {
     setLoadingInstallations(true);
-    fetch(`/api/github-apps/${activeId}/installations`)
+    return fetch(`/api/github-apps/${appId}/installations`)
       .then((res) => {
         if (!res.ok) throw new Error(`error ${res.status}`);
         return res.json();
       })
-      .then((rows) => setInstallations((prev) => ({ ...prev, [activeId]: rows })))
+      .then((rows) => setInstallations((prev) => ({ ...prev, [appId]: rows })))
       .catch((err) => setError((err as Error).message))
       .finally(() => setLoadingInstallations(false));
-  }, [activeId, installations]);
+  }
+
+  useEffect(() => {
+    if (!activeId || installations[activeId]) return;
+    loadInstallations(activeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   async function handleRemove(app: GithubAppRow) {
     if (!window.confirm(`¿Eliminar la GitHub App "${app.name}"? Sus instalaciones y repos quedarán sin App asociada.`)) {
@@ -85,13 +106,35 @@ export function GithubAppsPanel({
     }
   }
 
+  async function handleSync(installationRowId: string) {
+    if (!activeId) return;
+    setSyncingId(installationRowId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/github-apps/installations/${installationRowId}/sync`, { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message ?? `error ${res.status}`);
+      }
+      await loadInstallations(activeId);
+      router.refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSyncingId(null);
+    }
+  }
+
   const activeApp = apps.find((a) => a.id === activeId) ?? null;
   const activeInstallations = activeId ? installations[activeId] : undefined;
 
   return (
     <>
-      {connected && (
-        <p className="status-ok">Cuenta de GitHub conectada correctamente.</p>
+      {connected && !syncError && <p className="status-ok">Cuenta de GitHub conectada y repos sincronizados correctamente.</p>}
+      {connected && syncError && (
+        <p className="status-warn">
+          Cuenta conectada, pero no se pudo sincronizar sus repos automáticamente — usá &quot;Sincronizar ahora&quot; abajo.
+        </p>
       )}
       {linkError && (
         <p className="error-text">{LINK_ERROR_MESSAGES[linkError] ?? 'No se pudo completar la conexión.'}</p>
@@ -149,7 +192,9 @@ export function GithubAppsPanel({
                       <th>Cuenta</th>
                       <th>Repos</th>
                       <th>Estado</th>
+                      <th>Conexión</th>
                       <th>Conectada</th>
+                      <th />
                     </tr>
                   </thead>
                   <tbody>
@@ -157,8 +202,20 @@ export function GithubAppsPanel({
                       <tr key={inst.id}>
                         <td>{inst.account_login}</td>
                         <td>{inst.repository_count}</td>
-                        <td>{inst.status}</td>
+                        <td>{inst.status === 'active' ? <span className="status-ok">activa</span> : <span className="status-bad">{inst.status}</span>}</td>
+                        <td>
+                          {inst.repos_synced_at ? (
+                            <span className="status-ok">sincronizado {timeAgo(inst.repos_synced_at)}</span>
+                          ) : (
+                            <span className="status-warn">nunca sincronizado</span>
+                          )}
+                        </td>
                         <td>{new Date(inst.created_at).toLocaleDateString()}</td>
+                        <td>
+                          <button type="button" onClick={() => handleSync(inst.id)} disabled={syncingId === inst.id}>
+                            {syncingId === inst.id ? 'Sincronizando…' : 'Sincronizar ahora'}
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>

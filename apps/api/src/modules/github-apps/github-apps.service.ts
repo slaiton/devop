@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { sign, verify } from 'jsonwebtoken';
 import { withTenant } from '@devsentinel/database';
 import { GithubAdapter } from '@devsentinel/git-providers';
-import { loadGithubAppCredentials } from '@devsentinel/github-apps';
+import { loadGithubAppCredentials, upsertInstallationRepositories } from '@devsentinel/github-apps';
 import { encrypt } from '@devsentinel/settings';
 
 export interface CreateGithubAppInput {
@@ -58,7 +58,7 @@ export class GithubAppsService {
       if (!appRows[0]) throw new NotFoundException('GitHub App no encontrada');
 
       const { rows } = await client.query(
-        `SELECT gi.id, gi.installation_id, gi.account_login, gi.status, gi.created_at,
+        `SELECT gi.id, gi.installation_id, gi.account_login, gi.status, gi.created_at, gi.repos_synced_at,
                 (SELECT count(*)::int FROM repositories r WHERE r.github_installation_id = gi.id) AS repository_count
          FROM github_installations gi
          WHERE gi.organization_id = $1 AND gi.github_app_id = $2
@@ -66,6 +66,35 @@ export class GithubAppsService {
         [orgId, githubAppRowId],
       );
       return rows;
+    });
+  }
+
+  /** Trae los repos accesibles para esta instalación directamente de la API de GitHub
+   * (no depende de que el webhook `installation_repositories` haya llegado) — se usa
+   * automáticamente al conectar una cuenta nueva y como botón manual "sincronizar
+   * ahora" para instalaciones ya conectadas cuyo webhook nunca llegó a configurarse. */
+  async syncRepositories(orgId: string, installationRowId: string): Promise<{ repository_count: number }> {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT gi.id, gi.installation_id, ga.id AS github_app_row_id
+         FROM github_installations gi
+         JOIN github_apps ga ON ga.id = gi.github_app_id
+         WHERE gi.id = $1 AND gi.organization_id = $2`,
+        [installationRowId, orgId],
+      );
+      const row = rows[0];
+      if (!row) throw new NotFoundException('instalación no encontrada');
+
+      const creds = await loadGithubAppCredentials(client, row.github_app_row_id);
+      const adapter = new GithubAdapter({
+        appId: creds.appId,
+        privateKey: creds.privateKey,
+        webhookSecret: creds.webhookSecret,
+      });
+      const repos = await adapter.listInstallationRepositories(Number(row.installation_id));
+      await upsertInstallationRepositories(client, orgId, installationRowId, repos);
+
+      return { repository_count: repos.length };
     });
   }
 
@@ -156,24 +185,43 @@ export class GithubAppsService {
       return { redirectPath: '/accounts?link_error=invalid_state' };
     }
 
+    let adapter: GithubAdapter;
     try {
-      await withTenant(payload.orgId, async (client) => {
+      adapter = await withTenant(payload.orgId, async (client) => {
         const creds = await loadGithubAppCredentials(client, payload.githubAppRowId);
-        const adapter = new GithubAdapter({
+        const builtAdapter = new GithubAdapter({
           appId: creds.appId,
           privateKey: creds.privateKey,
           webhookSecret: creds.webhookSecret,
         });
-        const accountLogin = await adapter.getInstallationAccountLogin(installationId);
+        const accountLogin = await builtAdapter.getInstallationAccountLogin(installationId);
         await client.query('SELECT link_installation_to_organization($1, $2, $3, $4)', [
           installationId,
           payload.orgId,
           accountLogin,
           payload.githubAppRowId,
         ]);
+        return builtAdapter;
       });
     } catch {
       return { redirectPath: '/accounts?link_error=link_failed' };
+    }
+
+    // La cuenta ya quedó conectada — si la sincronización inicial de repos falla (rate
+    // limit, hiccup transitorio de la API), no lo tratamos como un error de conexión;
+    // el botón manual "sincronizar ahora" y el webhook siguen siendo el respaldo.
+    try {
+      await withTenant(payload.orgId, async (client) => {
+        const { rows } = await client.query('SELECT id FROM github_installations WHERE installation_id = $1', [
+          installationId,
+        ]);
+        const installationRowId: string | undefined = rows[0]?.id;
+        if (!installationRowId) return;
+        const repos = await adapter.listInstallationRepositories(installationId);
+        await upsertInstallationRepositories(client, payload.orgId, installationRowId, repos);
+      });
+    } catch {
+      return { redirectPath: '/accounts?connected=1&sync_error=1' };
     }
 
     return { redirectPath: '/accounts?connected=1' };

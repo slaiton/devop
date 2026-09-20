@@ -11,6 +11,7 @@ import type {
   FindOpenPullRequestParams,
   GithubIssueSummary,
   GitProviderPort,
+  InstallationRepoSummary,
   IssueCommentParams,
   ListIssuesParams,
   MergeBranchParams,
@@ -268,6 +269,21 @@ export class GithubAdapter implements GitProviderPort {
         updatedAt: issue.updated_at,
         closedAt: issue.closed_at ?? null,
       }));
+  }
+
+  /** Lista los repos a los que la instalación tiene acceso — vía la API, no vía
+   * webhooks. Se usa tanto al conectar una cuenta (sincronización inicial, sin esperar
+   * a que lleguen los eventos `installation`/`installation_repositories`) como para el
+   * botón manual "sincronizar ahora": si el webhook de una App nunca llegó a
+   * configurarse bien, esta es la única forma de que los repos aparezcan. */
+  async listInstallationRepositories(installationId: number): Promise<InstallationRepoSummary[]> {
+    const client = this.getInstallationClient(installationId);
+    const data = await client.paginate(client.apps.listReposAccessibleToInstallation, { per_page: 100 });
+    return data.map((repo) => ({
+      githubRepoId: repo.id,
+      fullName: repo.full_name,
+      defaultBranch: repo.default_branch ?? 'main',
+    }));
   }
 
   /** Resuelve el account_login dueño de una instalación a partir de su id — cliente

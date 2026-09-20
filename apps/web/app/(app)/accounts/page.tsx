@@ -15,7 +15,7 @@ async function fetchGithubApps(): Promise<GithubAppRow[]> {
 export default async function AccountsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ connected?: string; link_error?: string }>;
+  searchParams: Promise<{ connected?: string; link_error?: string; sync_error?: string }>;
 }) {
   const session = await getSession();
   if (!session || session.role !== 'admin') {
@@ -31,10 +31,16 @@ export default async function AccountsPage({
         Cada GitHub App registrada acá puede instalarse en una o varias cuentas/organizaciones de
         GitHub — todas las que instales quedan bajo este mismo equipo, con sus repos analizados igual
         que los de la cuenta principal. Una organización puede tener varias Apps conectadas al mismo
-        tiempo (ej. una personal y una del trabajo).
+        tiempo (ej. una personal y una del trabajo). El estado de &quot;Conexión&quot; de cada cuenta
+        instalada muestra si sus repos ya se sincronizaron.
       </p>
 
-      <GithubAppsPanel apps={apps} connected={params.connected === '1'} linkError={params.link_error ?? null} />
+      <GithubAppsPanel
+        apps={apps}
+        connected={params.connected === '1'}
+        linkError={params.link_error ?? null}
+        syncError={params.sync_error === '1'}
+      />
     </>
   );
 }

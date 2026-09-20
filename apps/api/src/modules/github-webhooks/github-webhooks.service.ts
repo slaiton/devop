@@ -4,6 +4,7 @@ import type { Queue } from 'bullmq';
 import { GithubAdapter } from '@devsentinel/git-providers';
 import { getPool, withTenant } from '@devsentinel/database';
 import { decrypt } from '@devsentinel/settings';
+import { upsertInstallationRepositories } from '@devsentinel/github-apps';
 import { REVIEW_QUEUE_NAME, type ReviewJobPayload } from '@devsentinel/event-contracts';
 import { IssuesSyncService } from './issuesSync.service';
 
@@ -283,14 +284,16 @@ export class GithubWebhooksService {
       const githubInstallationId = rows[0]?.id;
       if (!githubInstallationId) return;
 
-      for (const repo of repos) {
-        await client.query(
-          `INSERT INTO repositories (organization_id, github_installation_id, github_repo_id, full_name, default_branch, webhook_status)
-           VALUES ($1, $2, $3, $4, $5, 'active')
-           ON CONFLICT (github_repo_id) DO UPDATE SET full_name = $4, webhook_status = 'active'`,
-          [orgId, githubInstallationId, repo.id, repo.full_name, repo.default_branch ?? 'main'],
-        );
-      }
+      await upsertInstallationRepositories(
+        client,
+        orgId,
+        githubInstallationId,
+        repos.map((repo) => ({
+          githubRepoId: repo.id,
+          fullName: repo.full_name,
+          defaultBranch: repo.default_branch ?? 'main',
+        })),
+      );
     });
   }
 

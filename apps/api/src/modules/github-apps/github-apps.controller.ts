@@ -38,6 +38,13 @@ export class GithubAppsController {
     return this.service.listInstallations(orgId, id);
   }
 
+  @Post('installations/:installationRowId/sync')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  syncRepositories(@CurrentOrg() orgId: string, @Param('installationRowId') installationRowId: string) {
+    return this.service.syncRepositories(orgId, installationRowId);
+  }
+
   @Get(':id/connect')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')

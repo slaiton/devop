@@ -140,6 +140,12 @@ export interface ListIssuesParams {
   state?: 'open' | 'closed' | 'all';
 }
 
+export interface InstallationRepoSummary {
+  githubRepoId: number;
+  fullName: string;
+  defaultBranch: string;
+}
+
 /**
  * Puerto genérico para cualquier proveedor Git. El MVP solo implementa
  * GithubAdapter; GitLab/Bitbucket en V1 implementan el mismo puerto sin
@@ -165,4 +171,5 @@ export interface GitProviderPort {
   setIssueState(params: SetIssueStateParams): Promise<void>;
   postIssueComment(params: IssueCommentParams): Promise<{ commentId: number }>;
   listIssues(params: ListIssuesParams): Promise<GithubIssueSummary[]>;
+  listInstallationRepositories(installationId: number): Promise<InstallationRepoSummary[]>;
 }

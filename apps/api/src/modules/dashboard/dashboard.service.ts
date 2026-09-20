@@ -33,6 +33,13 @@ export class DashboardService {
         ORDER BY started_at DESC
         LIMIT 1
       ) last_run ON true`;
+    // Cada repo pertenece a una instalación, que pertenece a una GitHub App concreta —
+    // sin este JOIN el front no puede separar la vista por App (ver GithubAppsPanel).
+    const appJoin = `
+      JOIN github_installations gi ON gi.id = r.github_installation_id
+      LEFT JOIN github_apps ga ON ga.id = gi.github_app_id`;
+    const appFields = `
+      gi.account_login, ga.id AS github_app_id, ga.name AS github_app_name`;
     const lastActivityFields = `
       last_run.commit_sha AS last_commit_sha, last_run.branch AS last_branch,
       last_run.gate_decision AS last_gate_decision, last_run.risk_level AS last_risk_level,
@@ -41,17 +48,19 @@ export class DashboardService {
     return withTenant(orgId, async (client) => {
       if (actor.role === 'admin') {
         const { rows } = await client.query(
-          `SELECT r.id, r.full_name, r.default_branch, r.webhook_status, r.created_at, ${lastActivityFields}
+          `SELECT r.id, r.full_name, r.default_branch, r.webhook_status, r.created_at, ${appFields}, ${lastActivityFields}
            FROM repositories r
+           ${appJoin}
            ${lastActivityJoin}
            ORDER BY last_run.started_at DESC NULLS LAST, r.full_name`,
         );
         return rows;
       }
       const { rows } = await client.query(
-        `SELECT r.id, r.full_name, r.default_branch, r.webhook_status, r.created_at, ${lastActivityFields}
+        `SELECT r.id, r.full_name, r.default_branch, r.webhook_status, r.created_at, ${appFields}, ${lastActivityFields}
          FROM repositories r
          JOIN repository_members rm ON rm.repository_id = r.id
+         ${appJoin}
          ${lastActivityJoin}
          WHERE rm.user_id = $1
          ORDER BY last_run.started_at DESC NULLS LAST, r.full_name`,
