@@ -45,6 +45,16 @@ export class GithubAppsController {
     return this.service.syncRepositories(orgId, installationRowId);
   }
 
+  // Reconcilia todas las instalaciones reales de la App vía la API de GitHub — respaldo
+  // para cuentas ya instaladas de antes de registrar esta App acá (ver
+  // GithubAppsService.syncInstallations).
+  @Post(':id/sync-installations')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  syncInstallations(@CurrentOrg() orgId: string, @Param('id') id: string) {
+    return this.service.syncInstallations(orgId, id);
+  }
+
   @Get(':id/connect')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')

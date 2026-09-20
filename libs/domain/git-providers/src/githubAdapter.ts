@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { Octokit } from '@octokit/rest';
 import { createAppAuth } from '@octokit/auth-app';
 import type {
+  AppInstallationSummary,
   CheckRunParams,
   CommitRef,
   CreatedIssue,
@@ -284,6 +285,29 @@ export class GithubAdapter implements GitProviderPort {
       fullName: repo.full_name,
       defaultBranch: repo.default_branch ?? 'main',
     }));
+  }
+
+  /** Lista TODAS las instalaciones existentes de esta App directamente desde la API —
+   * cliente autenticado como App (JWT), no como una instalación concreta. Es el
+   * respaldo para "conectar" una cuenta que ya tenía la App instalada de antes (p. ej.
+   * la cuenta principal, instalada bajo el viejo sistema de un solo App global): el
+   * flujo interactivo de `/apps/<slug>/installations/new` no pasa por nuestro
+   * callback cuando GitHub detecta que ya está instalada, así que nunca dispara
+   * `handleInstallCallback` — esta llamada no depende de esa interacción del
+   * navegador en absoluto. */
+  async listAppInstallations(): Promise<AppInstallationSummary[]> {
+    const client = new Octokit({
+      authStrategy: createAppAuth,
+      auth: { appId: this.config.appId, privateKey: this.config.privateKey },
+    });
+    const data = await client.paginate(client.apps.listInstallations, { per_page: 100 });
+    return data.map((installation) => {
+      const account = installation.account as { login?: string; slug?: string } | null;
+      return {
+        installationId: installation.id,
+        accountLogin: account?.login ?? account?.slug ?? 'unknown',
+      };
+    });
   }
 
   /** Resuelve el account_login dueño de una instalación a partir de su id — cliente

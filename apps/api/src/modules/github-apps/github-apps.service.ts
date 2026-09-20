@@ -1,9 +1,15 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { sign, verify } from 'jsonwebtoken';
+import type { PoolClient } from 'pg';
 import { withTenant } from '@devsentinel/database';
 import { GithubAdapter } from '@devsentinel/git-providers';
 import { loadGithubAppCredentials, upsertInstallationRepositories } from '@devsentinel/github-apps';
 import { encrypt } from '@devsentinel/settings';
+
+async function buildAdapterForApp(client: PoolClient, githubAppRowId: string): Promise<GithubAdapter> {
+  const creds = await loadGithubAppCredentials(client, githubAppRowId);
+  return new GithubAdapter({ appId: creds.appId, privateKey: creds.privateKey, webhookSecret: creds.webhookSecret });
+}
 
 export interface CreateGithubAppInput {
   name: string;
@@ -85,16 +91,50 @@ export class GithubAppsService {
       const row = rows[0];
       if (!row) throw new NotFoundException('instalación no encontrada');
 
-      const creds = await loadGithubAppCredentials(client, row.github_app_row_id);
-      const adapter = new GithubAdapter({
-        appId: creds.appId,
-        privateKey: creds.privateKey,
-        webhookSecret: creds.webhookSecret,
-      });
+      const adapter = await buildAdapterForApp(client, row.github_app_row_id);
       const repos = await adapter.listInstallationRepositories(Number(row.installation_id));
       await upsertInstallationRepositories(client, orgId, installationRowId, repos);
 
       return { repository_count: repos.length };
+    });
+  }
+
+  /** Reconcilia TODAS las instalaciones reales de esta App (vía la API de GitHub, no
+   * vía el flujo interactivo de "instalar") y sincroniza sus repos — el respaldo para
+   * cuentas que ya tenían la App instalada de antes de conectarla acá (p. ej. la cuenta
+   * principal, instalada bajo el viejo sistema de un solo App global vía `.env`):
+   * GitHub no pasa por nuestro callback cuando la App ya está instalada en la cuenta
+   * elegida, así que "Conectar" nunca llega a dispararse para esos casos. */
+  async syncInstallations(orgId: string, githubAppRowId: string): Promise<{ installations: number; repositories: number }> {
+    return withTenant(orgId, async (client) => {
+      const { rows: appRows } = await client.query('SELECT id FROM github_apps WHERE id = $1 AND organization_id = $2', [
+        githubAppRowId,
+        orgId,
+      ]);
+      if (!appRows[0]) throw new NotFoundException('GitHub App no encontrada');
+
+      const adapter = await buildAdapterForApp(client, githubAppRowId);
+      const installations = await adapter.listAppInstallations();
+
+      let totalRepos = 0;
+      for (const installation of installations) {
+        await client.query('SELECT link_installation_to_organization($1, $2, $3, $4)', [
+          installation.installationId,
+          orgId,
+          installation.accountLogin,
+          githubAppRowId,
+        ]);
+        const { rows } = await client.query('SELECT id FROM github_installations WHERE installation_id = $1', [
+          installation.installationId,
+        ]);
+        const installationRowId: string | undefined = rows[0]?.id;
+        if (!installationRowId) continue;
+        const repos = await adapter.listInstallationRepositories(installation.installationId);
+        await upsertInstallationRepositories(client, orgId, installationRowId, repos);
+        totalRepos += repos.length;
+      }
+
+      return { installations: installations.length, repositories: totalRepos };
     });
   }
 
@@ -188,12 +228,7 @@ export class GithubAppsService {
     let adapter: GithubAdapter;
     try {
       adapter = await withTenant(payload.orgId, async (client) => {
-        const creds = await loadGithubAppCredentials(client, payload.githubAppRowId);
-        const builtAdapter = new GithubAdapter({
-          appId: creds.appId,
-          privateKey: creds.privateKey,
-          webhookSecret: creds.webhookSecret,
-        });
+        const builtAdapter = await buildAdapterForApp(client, payload.githubAppRowId);
         const accountLogin = await builtAdapter.getInstallationAccountLogin(installationId);
         await client.query('SELECT link_installation_to_organization($1, $2, $3, $4)', [
           installationId,

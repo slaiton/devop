@@ -59,6 +59,8 @@ export function GithubAppsPanel({
   const [loadingInstallations, setLoadingInstallations] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [syncingInstallations, setSyncingInstallations] = useState(false);
+  const [syncInstallationsResult, setSyncInstallationsResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -125,6 +127,29 @@ export function GithubAppsPanel({
     }
   }
 
+  async function handleSyncInstallations(app: GithubAppRow) {
+    setSyncingInstallations(true);
+    setSyncInstallationsResult(null);
+    setError(null);
+    try {
+      const res = await fetch(`/api/github-apps/${app.id}/sync-installations`, { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message ?? `error ${res.status}`);
+      }
+      const result: { installations: number; repositories: number } = await res.json();
+      setSyncInstallationsResult(
+        `Encontradas ${result.installations} cuenta${result.installations === 1 ? '' : 's'} instalada${result.installations === 1 ? '' : 's'} con ${result.repositories} repo${result.repositories === 1 ? '' : 's'}.`,
+      );
+      await loadInstallations(app.id);
+      router.refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSyncingInstallations(false);
+    }
+  }
+
   const activeApp = apps.find((a) => a.id === activeId) ?? null;
   const activeInstallations = activeId ? installations[activeId] : undefined;
 
@@ -172,12 +197,22 @@ export function GithubAppsPanel({
                       window.location.href = `/api/github-apps/${activeApp.id}/connect`;
                     }}
                   >
-                    Conectar una cuenta/organización
+                    Conectar una cuenta nueva
+                  </button>{' '}
+                  <button type="button" onClick={() => handleSyncInstallations(activeApp)} disabled={syncingInstallations}>
+                    {syncingInstallations ? 'Buscando instalaciones…' : 'Sincronizar instalaciones existentes'}
                   </button>{' '}
                   <button type="button" onClick={() => handleRemove(activeApp)} disabled={deleting}>
                     Eliminar App
                   </button>
                 </p>
+                <p style={{ color: 'var(--ink-muted)', fontSize: '0.85rem' }}>
+                  Si esta App ya estaba instalada en una cuenta antes de registrarla acá (p. ej. la cuenta
+                  principal, conectada antes desde el login), usá &quot;Sincronizar instalaciones
+                  existentes&quot; — GitHub no siempre redirige a través del botón &quot;Conectar&quot;
+                  cuando la App ya está instalada.
+                </p>
+                {syncInstallationsResult && <p className="status-ok">{syncInstallationsResult}</p>}
               </div>
 
               <h2>Cuentas instaladas</h2>

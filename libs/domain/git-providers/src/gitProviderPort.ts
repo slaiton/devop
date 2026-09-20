@@ -146,6 +146,11 @@ export interface InstallationRepoSummary {
   defaultBranch: string;
 }
 
+export interface AppInstallationSummary {
+  installationId: number;
+  accountLogin: string;
+}
+
 /**
  * Puerto genérico para cualquier proveedor Git. El MVP solo implementa
  * GithubAdapter; GitLab/Bitbucket en V1 implementan el mismo puerto sin
@@ -172,4 +177,5 @@ export interface GitProviderPort {
   postIssueComment(params: IssueCommentParams): Promise<{ commentId: number }>;
   listIssues(params: ListIssuesParams): Promise<GithubIssueSummary[]>;
   listInstallationRepositories(installationId: number): Promise<InstallationRepoSummary[]>;
+  listAppInstallations(): Promise<AppInstallationSummary[]>;
 }
