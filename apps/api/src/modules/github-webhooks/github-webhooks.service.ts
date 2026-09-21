@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { GithubAdapter } from '@devsentinel/git-providers';
@@ -15,6 +15,8 @@ export interface WebhookAppContext {
 
 @Injectable()
 export class GithubWebhooksService {
+  private readonly logger = new Logger(GithubWebhooksService.name);
+
   constructor(
     @InjectQueue(REVIEW_QUEUE_NAME) private readonly queue: Queue<ReviewJobPayload>,
     private readonly issuesSync: IssuesSyncService,
@@ -26,28 +28,45 @@ export class GithubWebhooksService {
    * antes de saber con qué secret validarlo. `github_apps` tiene RLS, así que resolver
    * organización + secret sin conocer el tenant exige la función SECURITY DEFINER
    * `resolve_github_app` (migración 0025, mismo patrón que
-   * `resolve_organization_for_installation`). */
+   * `resolve_organization_for_installation`). Varias Apps comparten esta misma URL de
+   * webhook sin problema — lo que las distingue es este header, no la ruta — pero eso
+   * hace que un typo en el App ID o el webhook secret guardados en `github_apps` falle
+   * en silencio (GitHub solo ve un 401) si no se loguea acá. */
   async verifyAndResolve(
     rawBody: Buffer,
     signature: string | undefined,
     githubAppId: string | undefined,
   ): Promise<WebhookAppContext | null> {
-    if (!githubAppId) return null;
+    if (!githubAppId) {
+      this.logger.warn('webhook rechazado: falta el header X-GitHub-Hook-Installation-Target-ID');
+      return null;
+    }
     const { rows } = await getPool().query(
       'SELECT organization_id, id, webhook_secret_encrypted FROM resolve_github_app($1)',
       [githubAppId],
     );
     const row = rows[0];
-    if (!row) return null;
+    if (!row) {
+      this.logger.warn(
+        `webhook rechazado: ninguna GitHub App registrada tiene el App ID '${githubAppId}' — revisá que coincida exactamente con el App ID real en github.com/settings/apps`,
+      );
+      return null;
+    }
 
     const webhookSecret = decrypt(row.webhook_secret_encrypted);
     const adapter = new GithubAdapter({ appId: githubAppId, privateKey: '', webhookSecret });
-    if (!adapter.verifyWebhookSignature(rawBody, signature)) return null;
+    if (!adapter.verifyWebhookSignature(rawBody, signature)) {
+      this.logger.warn(
+        `webhook rechazado: firma inválida para la App ID '${githubAppId}' (organización ${row.organization_id}) — el webhook secret guardado en /accounts no coincide con el configurado en github.com para esta App`,
+      );
+      return null;
+    }
 
     return { organizationId: row.organization_id as string, githubAppRowId: row.id as string };
   }
 
   async handleEvent(event: string, payload: any, ctx: WebhookAppContext): Promise<void> {
+    this.logger.log(`webhook aceptado: evento '${event}' para la organización ${ctx.organizationId}`);
     switch (event) {
       case 'installation':
         if (payload.action === 'created') await this.handleInstallationCreated(payload, ctx);
@@ -114,13 +133,20 @@ export class GithubWebhooksService {
 
     const [owner, repo] = String(payload.repository.full_name).split('/');
     const repository = await this.getRepositoryForPush(orgId, payload.repository.id);
-    if (!repository) return;
+    if (!repository) {
+      this.logger.warn(`push ignorado: repo de GitHub ${payload.repository.full_name} no está sincronizado en esta organización todavía`);
+      return;
+    }
 
     const commitSha: string = payload.after;
     if (!commitSha || commitSha === '0000000000000000000000000000000000000000') return;
 
     const branch = String(payload.ref ?? '').replace(/^refs\/heads\//, '');
-    if (!branch || branch === repository.default_branch) return;
+    if (!branch) return;
+    if (repository.ignored_push_branches.includes(branch)) {
+      this.logger.log(`push ignorado: ${repository.full_name}@${branch} está en la lista de ramas a omitir`);
+      return;
+    }
 
     const authorName: string | null = payload.head_commit?.author?.name ?? null;
     const authorEmail: string | null = payload.head_commit?.author?.email ?? null;
@@ -240,11 +266,17 @@ export class GithubWebhooksService {
   private async getRepositoryForPush(
     orgId: string,
     githubRepoId: number,
-  ): Promise<{ id: string; default_branch: string } | null> {
+  ): Promise<{ id: string; full_name: string; ignored_push_branches: string[] } | null> {
     return withTenant(orgId, async (client) => {
-      const { rows } = await client.query('SELECT id, default_branch FROM repositories WHERE github_repo_id = $1', [
-        githubRepoId,
-      ]);
+      const { rows } = await client.query(
+        `SELECT r.id, r.full_name,
+                COALESCE(qgc.ignored_push_branches, ARRAY[r.default_branch]) AS ignored_push_branches
+         FROM repositories r
+         LEFT JOIN quality_gate_configs qgc
+           ON qgc.organization_id = r.organization_id AND qgc.repository_id = r.id
+         WHERE r.github_repo_id = $1`,
+        [githubRepoId],
+      );
       return rows[0] ?? null;
     });
   }

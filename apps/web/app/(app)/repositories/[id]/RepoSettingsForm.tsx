@@ -10,6 +10,7 @@ export function RepoSettingsForm({
   autoCreatePrOnPush,
   notifyAuthorOnPush,
   autoMergeOnGreen,
+  ignoredPushBranches,
 }: {
   repositoryId: string;
   promotionSourceBranch: string;
@@ -17,6 +18,7 @@ export function RepoSettingsForm({
   autoCreatePrOnPush: boolean;
   notifyAuthorOnPush: boolean;
   autoMergeOnGreen: boolean;
+  ignoredPushBranches: string[];
 }) {
   const router = useRouter();
   const [sourceBranch, setSourceBranch] = useState(promotionSourceBranch);
@@ -24,6 +26,7 @@ export function RepoSettingsForm({
   const [autoCreatePr, setAutoCreatePr] = useState(autoCreatePrOnPush);
   const [notifyAuthor, setNotifyAuthor] = useState(notifyAuthorOnPush);
   const [autoMerge, setAutoMerge] = useState(autoMergeOnGreen);
+  const [ignoredBranches, setIgnoredBranches] = useState(ignoredPushBranches.join(', '));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -43,6 +46,10 @@ export function RepoSettingsForm({
           autoCreatePrOnPush: autoCreatePr,
           notifyAuthorOnPush: notifyAuthor,
           autoMergeOnGreen: autoMerge,
+          ignoredPushBranches: ignoredBranches
+            .split(',')
+            .map((b) => b.trim())
+            .filter(Boolean),
         }),
       });
       if (!res.ok) {
@@ -61,7 +68,17 @@ export function RepoSettingsForm({
   return (
     <form onSubmit={handleSubmit}>
       <p style={{ color: 'var(--ink-muted)' }}>
-        Se analiza cualquier push a cualquier rama del repositorio, excepto la rama principal (default).
+        Se analiza cualquier push a cualquier rama del repositorio, excepto las ramas listadas abajo.
+      </p>
+      <p>
+        <label>
+          Ramas a omitir (separadas por coma):
+          <input
+            value={ignoredBranches}
+            onChange={(e) => setIgnoredBranches(e.target.value)}
+            placeholder="main, master, develop"
+          />
+        </label>
       </p>
       <p>
         <label>

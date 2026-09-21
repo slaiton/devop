@@ -13,6 +13,7 @@ interface UpdateRepositorySettingsBody {
   autoCreatePrOnPush?: boolean;
   notifyAuthorOnPush?: boolean;
   autoMergeOnGreen?: boolean;
+  ignoredPushBranches?: string[];
 }
 
 interface UpdateProjectProfileBody {

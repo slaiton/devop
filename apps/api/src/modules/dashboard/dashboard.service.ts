@@ -107,7 +107,8 @@ export class DashboardService {
                 COALESCE(qgc.promotion_target_branch, 'main') AS promotion_target_branch,
                 COALESCE(qgc.auto_create_pr_on_push, false) AS auto_create_pr_on_push,
                 COALESCE(qgc.notify_author_on_push, true) AS notify_author_on_push,
-                COALESCE(qgc.auto_merge_on_green, false) AS auto_merge_on_green
+                COALESCE(qgc.auto_merge_on_green, false) AS auto_merge_on_green,
+                COALESCE(qgc.ignored_push_branches, ARRAY[r.default_branch]) AS ignored_push_branches
          FROM repositories r
          LEFT JOIN quality_gate_configs qgc
            ON qgc.organization_id = r.organization_id AND qgc.repository_id = r.id
@@ -128,6 +129,7 @@ export class DashboardService {
       autoCreatePrOnPush?: boolean;
       notifyAuthorOnPush?: boolean;
       autoMergeOnGreen?: boolean;
+      ignoredPushBranches?: string[];
     },
   ) {
     await withTenant(orgId, async (client) => {
@@ -137,19 +139,21 @@ export class DashboardService {
         settings.autoCreatePrOnPush,
         settings.notifyAuthorOnPush,
         settings.autoMergeOnGreen,
+        settings.ignoredPushBranches,
       ].some((v) => v !== undefined);
       if (hasChanges) {
         await client.query(
           `INSERT INTO quality_gate_configs
              (organization_id, repository_id, promotion_source_branch, promotion_target_branch,
-              auto_create_pr_on_push, notify_author_on_push, auto_merge_on_green)
-           VALUES ($1, $2, COALESCE($3, 'staging'), COALESCE($4, 'main'), COALESCE($5, false), COALESCE($6, true), COALESCE($7, false))
+              auto_create_pr_on_push, notify_author_on_push, auto_merge_on_green, ignored_push_branches)
+           VALUES ($1, $2, COALESCE($3, 'staging'), COALESCE($4, 'main'), COALESCE($5, false), COALESCE($6, true), COALESCE($7, false), $8)
            ON CONFLICT (organization_id, repository_id) DO UPDATE
              SET promotion_source_branch = COALESCE($3, quality_gate_configs.promotion_source_branch),
                  promotion_target_branch = COALESCE($4, quality_gate_configs.promotion_target_branch),
                  auto_create_pr_on_push = COALESCE($5, quality_gate_configs.auto_create_pr_on_push),
                  notify_author_on_push = COALESCE($6, quality_gate_configs.notify_author_on_push),
-                 auto_merge_on_green = COALESCE($7, quality_gate_configs.auto_merge_on_green)`,
+                 auto_merge_on_green = COALESCE($7, quality_gate_configs.auto_merge_on_green),
+                 ignored_push_branches = COALESCE($8, quality_gate_configs.ignored_push_branches)`,
           [
             orgId,
             repositoryId,
@@ -158,6 +162,7 @@ export class DashboardService {
             settings.autoCreatePrOnPush ?? null,
             settings.notifyAuthorOnPush ?? null,
             settings.autoMergeOnGreen ?? null,
+            settings.ignoredPushBranches ?? null,
           ],
         );
       }

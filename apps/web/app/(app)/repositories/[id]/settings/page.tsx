@@ -8,6 +8,7 @@ interface RepoSettings {
   auto_create_pr_on_push: boolean;
   notify_author_on_push: boolean;
   auto_merge_on_green: boolean;
+  ignored_push_branches: string[];
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -43,6 +44,7 @@ export default async function RepositorySettingsTab({ params }: { params: Promis
       autoCreatePrOnPush={settings.auto_create_pr_on_push}
       notifyAuthorOnPush={settings.notify_author_on_push}
       autoMergeOnGreen={settings.auto_merge_on_green}
+      ignoredPushBranches={settings.ignored_push_branches}
     />
   );
 }
