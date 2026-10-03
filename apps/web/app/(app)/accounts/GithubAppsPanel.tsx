@@ -24,6 +24,29 @@ interface InstallationRow {
   repos_synced_at: string | null;
 }
 
+interface WebhookCheck {
+  key: string;
+  ok: boolean;
+  message: string;
+}
+
+interface WebhookDelivery {
+  id: number;
+  event: string;
+  action: string | null;
+  statusCode: number;
+  deliveredAt: string;
+}
+
+interface WebhookReport {
+  expectedUrl: string;
+  reachable: boolean;
+  checks: WebhookCheck[];
+  webhookUrl: string | null;
+  subscribedEvents: string[];
+  recentDeliveries: WebhookDelivery[];
+}
+
 const LINK_ERROR_MESSAGES: Record<string, string> = {
   missing_params: 'GitHub no devolvió los datos esperados — intentá conectar de nuevo.',
   invalid_state: 'El enlace de conexión expiró o no es válido — intentá conectar de nuevo desde acá.',
@@ -61,6 +84,9 @@ export function GithubAppsPanel({
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncingInstallations, setSyncingInstallations] = useState(false);
   const [syncInstallationsResult, setSyncInstallationsResult] = useState<string | null>(null);
+  const [webhookReports, setWebhookReports] = useState<Record<string, WebhookReport>>({});
+  const [webhookBusy, setWebhookBusy] = useState<'diagnose' | 'repair' | 'redeliver' | null>(null);
+  const [webhookMessage, setWebhookMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -150,6 +176,49 @@ export function GithubAppsPanel({
     }
   }
 
+  async function webhookRequest<T>(app: GithubAppRow, kind: 'diagnose' | 'repair' | 'redeliver'): Promise<T> {
+    const path = { diagnose: 'webhook-diagnostics', repair: 'webhook-repair', redeliver: 'webhook-redeliver' }[kind];
+    const res = await fetch(`/api/github-apps/${app.id}/${path}`, { method: kind === 'diagnose' ? 'GET' : 'POST' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message ?? `error ${res.status}`);
+    }
+    return res.json();
+  }
+
+  async function handleWebhook(app: GithubAppRow, kind: 'diagnose' | 'repair' | 'redeliver') {
+    if (
+      kind === 'repair' &&
+      !window.confirm(
+        'Esto cambia la URL y el webhook secret del webhook de esta App en GitHub para que coincidan con los guardados acá. ¿Continuar?',
+      )
+    ) {
+      return;
+    }
+    setWebhookBusy(kind);
+    setWebhookMessage(null);
+    setError(null);
+    try {
+      if (kind === 'repair') {
+        const { url } = await webhookRequest<{ url: string }>(app, 'repair');
+        setWebhookMessage(`Webhook actualizado en GitHub: ${url}. Mandá un push de prueba y volvé a diagnosticar.`);
+      } else if (kind === 'redeliver') {
+        const { redelivered } = await webhookRequest<{ redelivered: number }>(app, 'redeliver');
+        setWebhookMessage(
+          redelivered
+            ? `Se reenviaron ${redelivered} entrega(s) fallida(s) — los pushes perdidos se analizan ahora.`
+            : 'No había entregas fallidas para reenviar.',
+        );
+      }
+      const report = await webhookRequest<WebhookReport>(app, 'diagnose');
+      setWebhookReports((prev) => ({ ...prev, [app.id]: report }));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setWebhookBusy(null);
+    }
+  }
+
   const activeApp = apps.find((a) => a.id === activeId) ?? null;
   const activeInstallations = activeId ? installations[activeId] : undefined;
 
@@ -213,6 +282,77 @@ export function GithubAppsPanel({
                   cuando la App ya está instalada.
                 </p>
                 {syncInstallationsResult && <p className="status-ok">{syncInstallationsResult}</p>}
+              </div>
+
+              <h2>Webhook de esta App</h2>
+              <div className="card">
+                <p style={{ color: 'var(--ink-muted)', fontSize: '0.85rem' }}>
+                  Cada App manda sus eventos (pushes, PRs, issues) a la misma URL de DevSentinel; se distinguen por
+                  su App ID y se verifican con el webhook secret de la App. Si esta App no está recibiendo pushes,
+                  diagnosticá acá la causa.
+                </p>
+                <p>
+                  <button
+                    type="button"
+                    onClick={() => handleWebhook(activeApp, 'diagnose')}
+                    disabled={webhookBusy !== null}
+                  >
+                    {webhookBusy === 'diagnose' ? 'Consultando GitHub…' : 'Diagnosticar webhook'}
+                  </button>{' '}
+                  <button
+                    type="button"
+                    onClick={() => handleWebhook(activeApp, 'repair')}
+                    disabled={webhookBusy !== null}
+                  >
+                    {webhookBusy === 'repair' ? 'Corrigiendo…' : 'Corregir URL y secret en GitHub'}
+                  </button>{' '}
+                  <button
+                    type="button"
+                    onClick={() => handleWebhook(activeApp, 'redeliver')}
+                    disabled={webhookBusy !== null}
+                  >
+                    {webhookBusy === 'redeliver' ? 'Reenviando…' : 'Reenviar entregas fallidas'}
+                  </button>
+                </p>
+                {webhookMessage && <p className="status-ok">{webhookMessage}</p>}
+                {webhookReports[activeApp.id] && (
+                  <>
+                    <ul style={{ listStyle: 'none', padding: 0 }}>
+                      {webhookReports[activeApp.id].checks.map((check) => (
+                        <li key={check.key} className={check.ok ? 'status-ok' : 'status-bad'} style={{ fontWeight: 500 }}>
+                          {check.ok ? '✓' : '✗'} {check.message}
+                        </li>
+                      ))}
+                    </ul>
+                    {webhookReports[activeApp.id].recentDeliveries.length > 0 && (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Evento</th>
+                            <th>Respuesta</th>
+                            <th>Cuándo</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {webhookReports[activeApp.id].recentDeliveries.map((d) => (
+                            <tr key={d.id}>
+                              <td>
+                                {d.event}
+                                {d.action ? `.${d.action}` : ''}
+                              </td>
+                              <td>
+                                <span className={d.statusCode >= 200 && d.statusCode < 300 ? 'status-ok' : 'status-bad'}>
+                                  {d.statusCode || 'sin respuesta'}
+                                </span>
+                              </td>
+                              <td>{timeAgo(d.deliveredAt)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
+                )}
               </div>
 
               <h2>Cuentas instaladas</h2>

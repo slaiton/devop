@@ -55,6 +55,27 @@ export class GithubAppsController {
     return this.service.syncInstallations(orgId, id);
   }
 
+  @Get(':id/webhook-diagnostics')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  webhookDiagnostics(@CurrentOrg() orgId: string, @Param('id') id: string) {
+    return this.service.getWebhookDiagnostics(orgId, id);
+  }
+
+  @Post(':id/webhook-repair')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  repairWebhook(@CurrentOrg() orgId: string, @Param('id') id: string) {
+    return this.service.repairWebhook(orgId, id);
+  }
+
+  @Post(':id/webhook-redeliver')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  redeliverFailedWebhooks(@CurrentOrg() orgId: string, @Param('id') id: string) {
+    return this.service.redeliverFailedWebhooks(orgId, id);
+  }
+
   @Get(':id/connect')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')

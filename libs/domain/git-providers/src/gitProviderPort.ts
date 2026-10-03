@@ -151,6 +151,38 @@ export interface AppInstallationSummary {
   accountLogin: string;
 }
 
+export interface ReadContextFilesParams {
+  installationId: number;
+  owner: string;
+  repo: string;
+}
+
+export interface ContextFile {
+  path: string;
+  content: string;
+}
+
+export interface WebhookDeliverySummary {
+  id: number;
+  guid: string;
+  event: string;
+  action: string | null;
+  statusCode: number;
+  status: string;
+  deliveredAt: string;
+  redelivery: boolean;
+}
+
+export interface WebhookDiagnostics {
+  appId: number | null;
+  appSlug: string | null;
+  subscribedEvents: string[];
+  permissions: Record<string, string>;
+  webhookUrl: string | null;
+  webhookContentType: string | null;
+  recentDeliveries: WebhookDeliverySummary[];
+}
+
 /**
  * Puerto genérico para cualquier proveedor Git. El MVP solo implementa
  * GithubAdapter; GitLab/Bitbucket en V1 implementan el mismo puerto sin
@@ -178,4 +210,5 @@ export interface GitProviderPort {
   listIssues(params: ListIssuesParams): Promise<GithubIssueSummary[]>;
   listInstallationRepositories(installationId: number): Promise<InstallationRepoSummary[]>;
   listAppInstallations(): Promise<AppInstallationSummary[]>;
+  readContextFiles(params: ReadContextFilesParams): Promise<ContextFile[]>;
 }

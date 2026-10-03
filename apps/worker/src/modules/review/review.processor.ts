@@ -10,6 +10,8 @@ export class ReviewProcessor extends WorkerHost {
   }
 
   async process(job: Job<ReviewJobPayload>): Promise<void> {
-    await this.reviewService.runReview(job.data);
+    // `attemptsStarted` ya cuenta el intento en curso (attemptsMade solo suma los terminados).
+    const isFinalAttempt = job.attemptsStarted >= (job.opts.attempts ?? 1);
+    await this.reviewService.runReview(job.data, { isFinalAttempt });
   }
 }

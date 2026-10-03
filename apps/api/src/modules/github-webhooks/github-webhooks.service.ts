@@ -126,25 +126,47 @@ export class GithubWebhooksService {
     await this.upsertRepositories(ctx.organizationId, installationId, added);
   }
 
+  /** Regla clave: ningún push válido se descarta en silencio. Los únicos descartes son
+   * deliberados y quedan logueados: tags, borrado de rama, ramas que el admin configuró
+   * para omitir, y duplicados de un commit que ya está en análisis (p. ej. cuando dos
+   * Apps instaladas en la misma cuenta mandan el mismo push, o GitHub reenvía la entrega).
+   * Un repo que todavía no estaba sincronizado NO es motivo para perder el push: se
+   * registra al vuelo con los datos del propio evento. */
   private async handlePush(payload: any, ctx: WebhookAppContext): Promise<void> {
     const installationId: number | undefined = payload.installation?.id;
-    if (!installationId) return;
+    if (!installationId) {
+      this.logger.warn(`push de ${payload.repository?.full_name} sin installation.id en el payload — no se puede analizar`);
+      return;
+    }
     const orgId = ctx.organizationId;
+    const fullName = String(payload.repository.full_name);
+    const [owner, repo] = fullName.split('/');
 
-    const [owner, repo] = String(payload.repository.full_name).split('/');
-    const repository = await this.getRepositoryForPush(orgId, payload.repository.id);
+    const ref = String(payload.ref ?? '');
+    if (!ref.startsWith('refs/heads/')) {
+      this.logger.log(`push ignorado: ${fullName} ${ref} no es una rama`);
+      return;
+    }
+    const commitSha: string = payload.after;
+    if (!commitSha || commitSha === '0000000000000000000000000000000000000000') {
+      this.logger.log(`push ignorado: ${fullName} ${ref} fue un borrado de rama`);
+      return;
+    }
+    const branch = ref.slice('refs/heads/'.length);
+
+    let repository = await this.getRepositoryForPush(orgId, payload.repository.id);
     if (!repository) {
-      this.logger.warn(`push ignorado: repo de GitHub ${payload.repository.full_name} no está sincronizado en esta organización todavía`);
+      repository = await this.registerRepositoryFromEvent(ctx, payload, installationId, owner);
+      if (!repository) return;
+    }
+
+    if (repository.ignored_push_branches.includes(branch)) {
+      this.logger.log(`push ignorado: ${fullName}@${branch} está en la lista de ramas a omitir`);
       return;
     }
 
-    const commitSha: string = payload.after;
-    if (!commitSha || commitSha === '0000000000000000000000000000000000000000') return;
-
-    const branch = String(payload.ref ?? '').replace(/^refs\/heads\//, '');
-    if (!branch) return;
-    if (repository.ignored_push_branches.includes(branch)) {
-      this.logger.log(`push ignorado: ${repository.full_name}@${branch} está en la lista de ramas a omitir`);
+    if (await this.hasActiveReviewRunForPush(orgId, repository.id, commitSha)) {
+      this.logger.log(`push duplicado: ${fullName}@${commitSha.slice(0, 7)} ya está analizado o en análisis`);
       return;
     }
 
@@ -164,7 +186,7 @@ export class GithubWebhooksService {
       developerId,
     );
 
-    await this.queue.add(REVIEW_QUEUE_NAME, {
+    await this.enqueueReview(orgId, {
       reviewRunId,
       organizationId: orgId,
       repositoryId: repository.id,
@@ -176,14 +198,89 @@ export class GithubWebhooksService {
     });
   }
 
+  /** Encola con reintentos (backoff exponencial): un LLM caído o un rate limit de GitHub
+   * no deben hacer que el push se pierda. Si ni siquiera se puede encolar (Redis caído) el
+   * review_run queda en 'failed' y el error sube — GitHub marca la entrega como fallida y
+   * se puede reenviar desde /accounts. */
+  private async enqueueReview(orgId: string, job: ReviewJobPayload): Promise<void> {
+    try {
+      await this.queue.add(REVIEW_QUEUE_NAME, job, {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 30_000 },
+      });
+    } catch (err) {
+      await withTenant(orgId, async (client) => {
+        await client.query(
+          `UPDATE review_runs SET status = 'failed', error_message = $1, completed_at = now() WHERE id = $2`,
+          [`no se pudo encolar el análisis: ${(err as Error).message}`, job.reviewRunId],
+        );
+      });
+      throw err;
+    }
+  }
+
+  private async hasActiveReviewRunForPush(orgId: string, repositoryId: string, commitSha: string): Promise<boolean> {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT 1 FROM review_runs
+         WHERE repository_id = $1 AND commit_sha = $2 AND trigger = 'push' AND status IN ('running', 'completed')
+         LIMIT 1`,
+        [repositoryId, commitSha],
+      );
+      return rows.length > 0;
+    });
+  }
+
+  /** Alta al vuelo del repo (y de su instalación) a partir de un push/PR de un repo que
+   * todavía no estaba en `repositories` — por ejemplo uno creado después de instalar la
+   * App con acceso a "todos los repos", cuyo evento `installation_repositories` no llegó.
+   * La organización es la dueña de la App que mandó el webhook. */
+  private async registerRepositoryFromEvent(
+    ctx: WebhookAppContext,
+    payload: any,
+    installationId: number,
+    owner: string,
+  ): Promise<{ id: string; full_name: string; ignored_push_branches: string[] } | null> {
+    const fullName = String(payload.repository.full_name);
+    try {
+      await getPool().query('SELECT link_installation_to_organization($1, $2, $3, $4)', [
+        installationId,
+        ctx.organizationId,
+        owner,
+        ctx.githubAppRowId,
+      ]);
+      await this.upsertRepositories(ctx.organizationId, installationId, [
+        { id: payload.repository.id, full_name: fullName, default_branch: payload.repository.default_branch },
+      ]);
+      const repository = await this.getRepositoryForPush(ctx.organizationId, payload.repository.id);
+      if (repository) {
+        this.logger.log(`repo ${fullName} no estaba sincronizado — registrado automáticamente desde el evento`);
+      } else {
+        this.logger.error(
+          `no se pudo registrar ${fullName}: ya existe en otra organización (¿la misma cuenta instalada en dos Apps de organizaciones distintas?)`,
+        );
+      }
+      return repository;
+    } catch (err) {
+      this.logger.error(`no se pudo registrar ${fullName} desde el evento: ${(err as Error).message}`, (err as Error).stack);
+      return null;
+    }
+  }
+
   private async handlePullRequest(payload: any, ctx: WebhookAppContext): Promise<void> {
     const installationId: number | undefined = payload.installation?.id;
-    if (!installationId) return;
+    if (!installationId) {
+      this.logger.warn(`pull_request de ${payload.repository?.full_name} sin installation.id en el payload — no se puede analizar`);
+      return;
+    }
     const orgId = ctx.organizationId;
 
     const [owner, repo] = String(payload.repository.full_name).split('/');
-    const repositoryId = await this.getRepositoryId(orgId, payload.repository.id);
-    if (!repositoryId) return;
+    let repositoryId = await this.getRepositoryId(orgId, payload.repository.id);
+    if (!repositoryId) {
+      repositoryId = (await this.registerRepositoryFromEvent(ctx, payload, installationId, owner))?.id ?? null;
+      if (!repositoryId) return;
+    }
 
     const pr = payload.pull_request;
     const pullRequestId = await withTenant(orgId, async (client) => {
@@ -226,7 +323,7 @@ export class GithubWebhooksService {
       developerId,
     );
 
-    await this.queue.add(REVIEW_QUEUE_NAME, {
+    await this.enqueueReview(orgId, {
       reviewRunId,
       organizationId: orgId,
       repositoryId,

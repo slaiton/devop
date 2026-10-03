@@ -1,10 +1,29 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { sign, verify } from 'jsonwebtoken';
 import type { PoolClient } from 'pg';
 import { withTenant } from '@devsentinel/database';
-import { GithubAdapter } from '@devsentinel/git-providers';
+import { GithubAdapter, type WebhookDeliverySummary } from '@devsentinel/git-providers';
 import { loadGithubAppCredentials, upsertInstallationRepositories } from '@devsentinel/github-apps';
 import { encrypt } from '@devsentinel/settings';
+
+/** Eventos que DevSentinel necesita que la App tenga suscritos (`installation` e
+ * `installation_repositories` GitHub los manda siempre, no hace falta suscribirlos). */
+const REQUIRED_WEBHOOK_EVENTS = ['push', 'pull_request', 'issues', 'issue_comment'];
+
+export interface WebhookCheck {
+  key: string;
+  ok: boolean;
+  message: string;
+}
+
+export interface WebhookDiagnosticsReport {
+  expectedUrl: string;
+  reachable: boolean;
+  checks: WebhookCheck[];
+  webhookUrl: string | null;
+  subscribedEvents: string[];
+  recentDeliveries: WebhookDeliverySummary[];
+}
 
 async function buildAdapterForApp(client: PoolClient, githubAppRowId: string): Promise<GithubAdapter> {
   const creds = await loadGithubAppCredentials(client, githubAppRowId);
@@ -97,6 +116,150 @@ export class GithubAppsService {
 
       return { repository_count: repos.length };
     });
+  }
+
+  /** Por qué una App no está mandando (o no se le están aceptando) los pushes: consulta
+   * a GitHub, con las credenciales de la propia App, su configuración de webhook y sus
+   * últimas entregas, y la cruza con lo que DevSentinel espera. Nada de esto se ve desde
+   * la base de datos — un secret mal copiado solo se manifiesta como 401 del lado de GitHub. */
+  async getWebhookDiagnostics(orgId: string, githubAppRowId: string): Promise<WebhookDiagnosticsReport> {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query('SELECT github_app_id FROM github_apps WHERE id = $1 AND organization_id = $2', [
+        githubAppRowId,
+        orgId,
+      ]);
+      if (!rows[0]) throw new NotFoundException('GitHub App no encontrada');
+      const storedAppId = String(rows[0].github_app_id);
+      const expectedUrl = this.expectedWebhookUrl();
+
+      let diag;
+      try {
+        diag = await (await buildAdapterForApp(client, githubAppRowId)).getWebhookDiagnostics();
+      } catch (err) {
+        return {
+          expectedUrl,
+          reachable: false,
+          checks: [
+            {
+              key: 'credentials',
+              ok: false,
+              message: `No se pudo consultar GitHub con las credenciales guardadas para esta App (${(err as Error).message}). Revisá App ID y private key.`,
+            },
+          ],
+          webhookUrl: null,
+          subscribedEvents: [],
+          recentDeliveries: [],
+        };
+      }
+
+      const checks: WebhookCheck[] = [];
+      checks.push({
+        key: 'app_id',
+        ok: String(diag.appId) === storedAppId,
+        message:
+          String(diag.appId) === storedAppId
+            ? `App ID correcto (${storedAppId}).`
+            : `El App ID guardado (${storedAppId}) no coincide con el real de la App (${diag.appId}). Los webhooks llegan con el real y se rechazan.`,
+      });
+
+      const normalize = (u: string | null) => (u ?? '').replace(/\/+$/, '');
+      const urlOk = Boolean(expectedUrl) && normalize(diag.webhookUrl) === normalize(expectedUrl);
+      checks.push({
+        key: 'webhook_url',
+        ok: urlOk,
+        message: urlOk
+          ? 'La URL del webhook apunta a este despliegue.'
+          : `La URL del webhook en GitHub es ${diag.webhookUrl ?? '(vacía)'} y debería ser ${expectedUrl || '(PUBLIC_WEB_ORIGIN no está definido en el servidor)'}.`,
+      });
+
+      const missing = REQUIRED_WEBHOOK_EVENTS.filter((e) => !diag.subscribedEvents.includes(e));
+      checks.push({
+        key: 'events',
+        ok: missing.length === 0,
+        message:
+          missing.length === 0
+            ? `Suscrita a los eventos necesarios (${REQUIRED_WEBHOOK_EVENTS.join(', ')}).`
+            : `Falta suscribir la App a: ${missing.join(', ')}. Se cambia en github.com → Settings → Developer settings → tu App → Permissions & events (para "push" la App necesita el permiso Contents: Read).`,
+      });
+
+      const failed = diag.recentDeliveries.filter((d) => d.statusCode >= 400 || d.statusCode === 0);
+      const statusSummary = [...new Set(failed.map((d) => d.statusCode))].join(', ');
+      checks.push({
+        key: 'deliveries',
+        ok: failed.length === 0,
+        message:
+          failed.length === 0
+            ? diag.recentDeliveries.length
+              ? `Las últimas ${diag.recentDeliveries.length} entregas fueron aceptadas.`
+              : 'GitHub todavía no registró ninguna entrega para esta App.'
+            : `${failed.length} de las últimas ${diag.recentDeliveries.length} entregas fallaron (HTTP ${statusSummary}). ${
+                failed.some((d) => d.statusCode === 401)
+                  ? '401 = el webhook secret de GitHub no coincide con el guardado acá, o el App ID está mal.'
+                  : 'Revisá que la URL del webhook sea accesible desde internet.'
+              }`,
+      });
+
+      const pushDeliveries = diag.recentDeliveries.filter((d) => d.event === 'push');
+      checks.push({
+        key: 'push_deliveries',
+        ok: pushDeliveries.length > 0,
+        message: pushDeliveries.length
+          ? `GitHub intentó entregar ${pushDeliveries.length} push(es) recientemente.`
+          : 'GitHub no registra ningún push enviado por esta App: o no hubo pushes en repos donde está instalada, o el evento push no está suscrito, o el webhook está desactivado.',
+      });
+
+      return {
+        expectedUrl,
+        reachable: true,
+        checks,
+        webhookUrl: diag.webhookUrl,
+        subscribedEvents: diag.subscribedEvents,
+        recentDeliveries: diag.recentDeliveries.slice(0, 15),
+      };
+    });
+  }
+
+  /** Alinea el webhook de la App en GitHub con este despliegue (URL + el secret que
+   * DevSentinel tiene guardado, que es con el que verifica cada firma). */
+  async repairWebhook(orgId: string, githubAppRowId: string): Promise<{ url: string }> {
+    const url = this.expectedWebhookUrl();
+    if (!url) throw new BadRequestException('PUBLIC_WEB_ORIGIN no está definido en el servidor, no se puede calcular la URL del webhook');
+    await withTenant(orgId, async (client) => {
+      const { rows } = await client.query('SELECT id FROM github_apps WHERE id = $1 AND organization_id = $2', [
+        githubAppRowId,
+        orgId,
+      ]);
+      if (!rows[0]) throw new NotFoundException('GitHub App no encontrada');
+      try {
+        await (await buildAdapterForApp(client, githubAppRowId)).updateWebhookConfig(url);
+      } catch (err) {
+        throw new BadGatewayException(`GitHub rechazó actualizar el webhook de esta App: ${(err as Error).message}`);
+      }
+    });
+    return { url };
+  }
+
+  /** Reenvía las entregas que GitHub intentó y DevSentinel rechazó — recupera los pushes
+   * que se perdieron mientras el webhook estaba mal configurado. */
+  async redeliverFailedWebhooks(orgId: string, githubAppRowId: string): Promise<{ redelivered: number }> {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query('SELECT id FROM github_apps WHERE id = $1 AND organization_id = $2', [
+        githubAppRowId,
+        orgId,
+      ]);
+      if (!rows[0]) throw new NotFoundException('GitHub App no encontrada');
+      try {
+        const redelivered = await (await buildAdapterForApp(client, githubAppRowId)).redeliverFailedWebhooks();
+        return { redelivered };
+      } catch (err) {
+        throw new BadGatewayException(`GitHub rechazó reenviar las entregas fallidas: ${(err as Error).message}`);
+      }
+    });
+  }
+
+  private expectedWebhookUrl(): string {
+    const origin = (process.env.PUBLIC_WEB_ORIGIN ?? '').replace(/\/+$/, '');
+    return origin ? `${origin}/api/webhooks/github` : '';
   }
 
   /** Reconcilia TODAS las instalaciones reales de esta App (vía la API de GitHub, no

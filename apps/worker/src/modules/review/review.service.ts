@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { getPool, withTenant } from '@devsentinel/database';
-import type { GitProviderPort } from '@devsentinel/git-providers';
+import type { ContextFile, GitProviderPort } from '@devsentinel/git-providers';
 import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import { OpenAiCompatibleLlmAdapter, embedLocally, type ProjectProfile, type ReviewResult } from '@devsentinel/llm-port';
 import { getSystemSettings, sendEmail } from '@devsentinel/settings';
@@ -10,6 +10,7 @@ import { upsertFindingsIssue } from '@devsentinel/issue-content';
 import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
 import { RagContextService } from './ragContext.service';
+import { readLocalContextFiles } from './contextFiles';
 
 interface QualityGateConfig {
   min_coverage_pct: number;
@@ -67,8 +68,20 @@ export class ReviewService {
     return { gitAdapter, llm };
   }
 
-  async runReview(payload: ReviewJobPayload): Promise<void> {
+  /** Regla clave: ningún push se queda sin analizar, tenga o no contexto configurado.
+   * Un fallo transitorio (proveedor LLM caído, GitHub con rate limit) se reintenta; si se
+   * agotan los intentos, el commit queda marcado con un check en FAILURE en GitHub —
+   * nunca "limpio" por haberse caído el análisis. Sin perfil de proyecto el análisis
+   * igual corre: primero intenta armar el contexto desde CLAUDE.md / AGENTS.md, y si no
+   * hay nada de eso revisa con criterios generales. */
+  async runReview(payload: ReviewJobPayload, options: { isFinalAttempt: boolean } = { isFinalAttempt: true }): Promise<void> {
     try {
+      await withTenant(payload.organizationId, (client) =>
+        client.query(`UPDATE review_runs SET status = 'running', error_message = NULL, completed_at = NULL WHERE id = $1`, [
+          payload.reviewRunId,
+        ]),
+      );
+
       const { gitAdapter, llm } = await this.buildClients(payload.organizationId, payload.installationId);
 
       const diff = payload.pullNumber
@@ -88,8 +101,9 @@ export class ReviewService {
       const analyzedFiles = extractAnalyzedFiles(diff);
 
       const installationToken = await gitAdapter.getInstallationToken(payload.installationId);
+      const existingProfile = await this.getProjectProfile(payload.organizationId, payload.repositoryId);
 
-      const { staticFindings, retrievedContext } = await this.checkout.withCheckout(
+      const { staticFindings, retrievedContext, localContextFiles } = await this.checkout.withCheckout(
         {
           owner: payload.owner,
           repo: payload.repo,
@@ -104,12 +118,16 @@ export class ReviewService {
             checkoutPath,
             diff,
           );
-          return { staticFindings: findings, retrievedContext: context };
+          // Solo hace falta leer los archivos de contexto si el repo no tiene perfil todavía.
+          const contextFiles = existingProfile ? [] : await readLocalContextFiles(checkoutPath);
+          return { staticFindings: findings, retrievedContext: context, localContextFiles: contextFiles };
         },
       );
 
       const [projectProfile, recentCommits] = await Promise.all([
-        this.getProjectProfile(payload.organizationId, payload.repositoryId),
+        existingProfile
+          ? Promise.resolve(existingProfile)
+          : this.bootstrapProjectProfile(gitAdapter, llm, payload, localContextFiles),
         gitAdapter.getRecentCommits({
           installationId: payload.installationId,
           owner: payload.owner,
@@ -138,12 +156,120 @@ export class ReviewService {
       await this.maybeAutoCreatePullRequest(gitAdapter, payload, result, gateDecision);
       await this.notifyAuthorOnPush(gitAdapter, payload, result, gateDecision);
     } catch (err) {
+      const message = (err as Error).message;
       this.logger.error(
-        `review run ${payload.reviewRunId} failed for ${payload.owner}/${payload.repo}@${payload.commitSha}: ${(err as Error).message}`,
+        `review run ${payload.reviewRunId} failed for ${payload.owner}/${payload.repo}@${payload.commitSha}${options.isFinalAttempt ? ' (último intento)' : ' (se reintentará)'}: ${message}`,
         (err as Error).stack,
       );
-      await this.markFailed(payload, (err as Error).message);
+      if (options.isFinalAttempt) {
+        await this.markFailed(payload, message);
+        await this.publishAnalysisFailure(payload, message);
+      } else {
+        await this.recordRetryableError(payload, message);
+      }
       throw err;
+    }
+  }
+
+  /** Último intento agotado: deja el commit marcado en GitHub como NO analizado (FAILURE),
+   * para que un push sin revisar jamás aparezca como si hubiera pasado. Si GitHub es
+   * justamente lo que está fallando, solo queda el log + review_run en 'failed'. */
+  private async publishAnalysisFailure(payload: ReviewJobPayload, message: string): Promise<void> {
+    try {
+      const { gitAdapter } = await this.buildClients(payload.organizationId, payload.installationId);
+      await gitAdapter.setCheckRunStatus({
+        installationId: payload.installationId,
+        owner: payload.owner,
+        repo: payload.repo,
+        commitSha: payload.commitSha,
+        conclusion: 'failure',
+        title: 'No se pudo analizar — DevSentinel AI',
+        summary: `El análisis automático de este commit falló tras varios intentos y NO debe considerarse revisado. Detalle: ${message.slice(0, 500)}`,
+      });
+    } catch (checkErr) {
+      this.logger.error(
+        `no se pudo publicar el check de fallo del review run ${payload.reviewRunId}: ${(checkErr as Error).message}`,
+      );
+    }
+  }
+
+  private async recordRetryableError(payload: ReviewJobPayload, message: string): Promise<void> {
+    await withTenant(payload.organizationId, async (client) => {
+      await client.query(`UPDATE review_runs SET error_message = $1 WHERE id = $2`, [message, payload.reviewRunId]);
+    });
+  }
+
+  /** Repo sin perfil: arma el contexto (stack + reglas) a partir de CLAUDE.md / AGENTS.md.
+   * Primero los de la rama por defecto vía API (lo ya integrado, no lo que trae el push
+   * que se está revisando); si ahí no hay, los del checkout del commit. Nunca debe
+   * frenar el análisis: sin archivos, o si el LLM no logra extraer el perfil, se revisa
+   * igual con criterios generales. El perfil guardado es un borrador editable
+   * (`auto_generated_from`) y nunca pisa uno que alguien haya configurado a mano. */
+  private async bootstrapProjectProfile(
+    gitAdapter: GitProviderPort,
+    llm: OpenAiCompatibleLlmAdapter,
+    payload: ReviewJobPayload,
+    localContextFiles: ContextFile[],
+  ): Promise<ProjectProfile | undefined> {
+    const fullName = `${payload.owner}/${payload.repo}`;
+    try {
+      let documents: ContextFile[] = [];
+      try {
+        documents = await gitAdapter.readContextFiles({
+          installationId: payload.installationId,
+          owner: payload.owner,
+          repo: payload.repo,
+        });
+      } catch (err) {
+        this.logger.warn(`no se pudieron leer archivos de contexto de ${fullName} vía API: ${(err as Error).message}`);
+      }
+      if (documents.length === 0) documents = localContextFiles;
+
+      if (documents.length === 0) {
+        this.logger.log(`${fullName} no tiene perfil ni CLAUDE.md/AGENTS.md — se analiza con criterios generales`);
+        return undefined;
+      }
+
+      const extracted = await llm.extractProjectProfile({ repositoryFullName: fullName, documents });
+      const sources = documents.map((d) => d.path);
+
+      await withTenant(payload.organizationId, async (client) => {
+        await client.query(
+          `INSERT INTO project_profiles
+             (organization_id, repository_id, language, framework, framework_version, runtime, database,
+              architecture_style, testing_strategy, notes, mandatory_rules, security_rules, conventions,
+              migrations_policy, compatibility_notes, auto_generated_from)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+           ON CONFLICT (repository_id) DO NOTHING`,
+          [
+            payload.organizationId,
+            payload.repositoryId,
+            extracted.language ?? null,
+            extracted.framework ?? null,
+            extracted.framework_version ?? null,
+            extracted.runtime ?? null,
+            extracted.database ?? null,
+            extracted.architecture_style ?? null,
+            extracted.testing_strategy ?? null,
+            extracted.notes ?? null,
+            extracted.mandatory_rules ?? [],
+            extracted.security_rules ?? [],
+            extracted.conventions ?? [],
+            extracted.migrations_policy ?? null,
+            extracted.compatibility_notes ?? null,
+            sources,
+          ],
+        );
+      });
+      this.logger.log(`perfil de ${fullName} generado automáticamente desde ${sources.join(', ')}`);
+      // Re-lee lo guardado: si otro job se adelantó (ON CONFLICT DO NOTHING) o una persona lo
+      // editó entre medio, se usa esa versión y no la recién extraída.
+      return await this.getProjectProfile(payload.organizationId, payload.repositoryId);
+    } catch (err) {
+      this.logger.warn(
+        `no se pudo generar el perfil automático de ${fullName}, se analiza sin contexto: ${(err as Error).message}`,
+      );
+      return undefined;
     }
   }
 
@@ -177,6 +303,9 @@ export class ReviewService {
     analyzedFiles: string[],
   ): Promise<void> {
     await withTenant(payload.organizationId, async (client) => {
+      // Idempotente ante reintentos: si un intento anterior llegó a guardar hallazgos
+      // pero falló después, no se duplican.
+      await client.query('DELETE FROM findings WHERE review_run_id = $1', [payload.reviewRunId]);
       await client.query(
         `UPDATE review_runs
          SET status = 'completed', quality_score = $1, risk_level = $2, summary = $3,

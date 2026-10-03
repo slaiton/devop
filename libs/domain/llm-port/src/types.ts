@@ -83,6 +83,34 @@ export interface ProjectProfile {
   compatibilityNotes?: string | null;
 }
 
+export const projectProfileExtractionSchema = z.object({
+  language: z.string().nullable().optional(),
+  framework: z.string().nullable().optional(),
+  framework_version: z.string().nullable().optional(),
+  runtime: z.string().nullable().optional(),
+  database: z.string().nullable().optional(),
+  architecture_style: z.string().nullable().optional(),
+  testing_strategy: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  mandatory_rules: z.array(z.string()).nullable().optional(),
+  security_rules: z.array(z.string()).nullable().optional(),
+  conventions: z.array(z.string()).nullable().optional(),
+  migrations_policy: z.string().nullable().optional(),
+  compatibility_notes: z.string().nullable().optional(),
+});
+
+export type ProjectProfileExtraction = z.infer<typeof projectProfileExtractionSchema>;
+
+export interface ContextDocument {
+  path: string;
+  content: string;
+}
+
+export interface ExtractProjectProfileInput {
+  repositoryFullName: string;
+  documents: ContextDocument[];
+}
+
 export interface RecentCommit {
   sha: string;
   message: string;

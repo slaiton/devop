@@ -16,6 +16,7 @@ interface ProjectProfileRow {
   conventions: string[];
   migrations_policy: string | null;
   compatibility_notes: string | null;
+  auto_generated_from: string[] | null;
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -44,23 +45,31 @@ export default async function RepositoryProjectProfileTab({ params }: { params: 
   }
 
   return (
-    <ProjectProfileForm
-      repositoryId={id}
-      initial={{
-        language: projectProfile.language ?? '',
-        framework: projectProfile.framework ?? '',
-        frameworkVersion: projectProfile.framework_version ?? '',
-        runtime: projectProfile.runtime ?? '',
-        database: projectProfile.database ?? '',
-        architectureStyle: projectProfile.architecture_style ?? '',
-        testingStrategy: projectProfile.testing_strategy ?? '',
-        migrationsPolicy: projectProfile.migrations_policy ?? '',
-        compatibilityNotes: projectProfile.compatibility_notes ?? '',
-        notes: projectProfile.notes ?? '',
-        mandatoryRules: (projectProfile.mandatory_rules ?? []).join('\n'),
-        securityRules: (projectProfile.security_rules ?? []).join('\n'),
-        conventions: (projectProfile.conventions ?? []).join('\n'),
-      }}
-    />
+    <>
+      {projectProfile.auto_generated_from && (
+        <p className="status-warn">
+          Este perfil se generó automáticamente a partir de {projectProfile.auto_generated_from.join(', ')} en el
+          primer push del repositorio. Revisalo: al guardarlo a mano pasa a considerarse configurado por una persona.
+        </p>
+      )}
+      <ProjectProfileForm
+        repositoryId={id}
+        initial={{
+          language: projectProfile.language ?? '',
+          framework: projectProfile.framework ?? '',
+          frameworkVersion: projectProfile.framework_version ?? '',
+          runtime: projectProfile.runtime ?? '',
+          database: projectProfile.database ?? '',
+          architectureStyle: projectProfile.architecture_style ?? '',
+          testingStrategy: projectProfile.testing_strategy ?? '',
+          migrationsPolicy: projectProfile.migrations_policy ?? '',
+          compatibilityNotes: projectProfile.compatibility_notes ?? '',
+          notes: projectProfile.notes ?? '',
+          mandatoryRules: (projectProfile.mandatory_rules ?? []).join('\n'),
+          securityRules: (projectProfile.security_rules ?? []).join('\n'),
+          conventions: (projectProfile.conventions ?? []).join('\n'),
+        }}
+      />
+    </>
   );
 }

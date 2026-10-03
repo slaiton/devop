@@ -3,16 +3,24 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { ZodSchema } from 'zod';
 import {
   issueReplySuggestionResultSchema,
+  projectProfileExtractionSchema,
   reconsiderFindingResultSchema,
   reviewResultSchema,
+  type ExtractProjectProfileInput,
   type IssueReplySuggestionInput,
   type IssueReplySuggestionResult,
+  type ProjectProfileExtraction,
   type ReconsiderFindingInput,
   type ReconsiderFindingResult,
   type ReviewDiffInput,
   type ReviewResult,
 } from './types';
-import { buildIssueReplySuggestionPrompt, buildReconsiderFindingPrompt, buildSinglePassReviewPrompt } from './prompt';
+import {
+  buildExtractProjectProfilePrompt,
+  buildIssueReplySuggestionPrompt,
+  buildReconsiderFindingPrompt,
+  buildSinglePassReviewPrompt,
+} from './prompt';
 import type { LlmPort } from './llmPort';
 
 /**
@@ -49,6 +57,11 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
   async suggestIssueReply(input: IssueReplySuggestionInput): Promise<IssueReplySuggestionResult> {
     const messages = buildIssueReplySuggestionPrompt(input);
     return this.requestStructured(messages, issueReplySuggestionResultSchema);
+  }
+
+  async extractProjectProfile(input: ExtractProjectProfileInput): Promise<ProjectProfileExtraction> {
+    const messages = buildExtractProjectProfilePrompt(input);
+    return this.requestStructured(messages, projectProfileExtractionSchema);
   }
 
   async embed(text: string): Promise<number[]> {

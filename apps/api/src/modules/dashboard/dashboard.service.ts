@@ -246,7 +246,7 @@ export class DashboardService {
       const { rows } = await client.query(
         `SELECT language, framework, framework_version, runtime, database, architecture_style,
                 testing_strategy, notes, mandatory_rules, security_rules, conventions,
-                migrations_policy, compatibility_notes
+                migrations_policy, compatibility_notes, auto_generated_from
          FROM project_profiles WHERE repository_id = $1`,
         [repositoryId],
       );
@@ -265,6 +265,7 @@ export class DashboardService {
           conventions: [],
           migrations_policy: null,
           compatibility_notes: null,
+          auto_generated_from: null,
         }
       );
     });
@@ -300,7 +301,7 @@ export class DashboardService {
            language = $3, framework = $4, framework_version = $5, runtime = $6, database = $7,
            architecture_style = $8, testing_strategy = $9, notes = $10, mandatory_rules = $11,
            security_rules = $12, conventions = $13, migrations_policy = $14, compatibility_notes = $15,
-           updated_at = now()`,
+           auto_generated_from = NULL, updated_at = now()`,
         [
           orgId,
           repositoryId,
