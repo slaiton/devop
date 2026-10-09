@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { getSession } from './session';
 import { AppShell } from './components/AppShell';
 import { LoginForm } from './components/LoginForm';
+import { PasswordChangeGate } from './components/PasswordChangeGate';
 import { RepositoriesByApp, type Repository } from './components/RepositoriesByApp';
 import { ShieldIcon } from './components/icons';
 
@@ -76,7 +77,7 @@ export default async function HomePage() {
           <p className="tagline">
             Revisión de código con IA y gestión de Git sin fricción.
             <br />
-            Iniciá sesión con tu correo y contraseña para continuar.
+            Entrá con tu passkey o con tu correo y contraseña.
           </p>
 
           <LoginForm />
@@ -87,6 +88,11 @@ export default async function HomePage() {
         </div>
       </div>
     );
+  }
+
+  // Contraseña temporal: la API rechaza el resto de rutas hasta que la cambie.
+  if (session.mustChangePassword) {
+    return <PasswordChangeGate />;
   }
 
   const isAdmin = session.role === 'admin';

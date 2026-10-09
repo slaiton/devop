@@ -1,6 +1,9 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { hash } from 'bcryptjs';
 import { getPool, withTenant } from '@devsentinel/database';
+import type { ClientInfo } from '../../common/session';
+import { AccountService } from '../auth/account.service';
+import { PasskeysService } from '../passkeys/passkeys.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -14,6 +17,11 @@ interface BootstrapFirstAdminInput {
 
 @Injectable()
 export class UsersService {
+  constructor(
+    private readonly account: AccountService,
+    private readonly passkeys: PasskeysService,
+  ) {}
+
   /** Público y de un solo uso: crea la primera organización + su primer admin, antes
    * de que exista ninguna. Se autobloquea apenas hay alguna organización — mismo
    * criterio que `SystemSettingsService.bootstrap`. Las GitHub Apps se conectan
@@ -39,7 +47,12 @@ export class UsersService {
     const organizationId = orgRows[0].id as string;
 
     const passwordHash = await hash(input.adminPassword, BCRYPT_ROUNDS);
-    const userId = await this.findOrCreatePendingUser(input.adminEmail, input.adminName, passwordHash);
+    // El primer admin escribe su propio correo en /setup, cuando todavía no puede haber SMTP
+    // configurado para verificarlo: se da por confirmado (es quien instala el sistema).
+    const { id: userId } = await this.findOrCreatePendingUser(input.adminEmail, input.adminName, passwordHash, {
+      mustChangePassword: false,
+      emailVerified: true,
+    });
 
     return withTenant(organizationId, async (client) => {
       await client.query(`INSERT INTO org_memberships (organization_id, user_id, role) VALUES ($1, $2, 'admin')`, [
@@ -60,16 +73,22 @@ export class UsersService {
 
   /** Identidad `users` compartida entre organizaciones: si el correo ya existe (p. ej.
    * la misma persona invitada a otra org), se reutiliza la fila en vez de duplicarla y
-   * NO se toca su contraseña. `passwordHash` solo aplica al crear la fila nueva. */
-  private async findOrCreatePendingUser(email: string, name: string | undefined, passwordHash: string | null): Promise<string> {
+   * NO se toca su contraseña. `passwordHash` y las marcas solo aplican al crear la fila. */
+  private async findOrCreatePendingUser(
+    email: string,
+    name: string | undefined,
+    passwordHash: string | null,
+    flags: { mustChangePassword: boolean; emailVerified: boolean },
+  ): Promise<{ id: string; created: boolean }> {
     const pool = getPool();
     const { rows: existing } = await pool.query('SELECT id FROM users WHERE lower(email) = lower($1)', [email.trim()]);
-    if (existing[0]) return existing[0].id as string;
+    if (existing[0]) return { id: existing[0].id as string, created: false };
     const { rows } = await pool.query(
-      'INSERT INTO users (github_user_id, email, name, password_hash) VALUES (NULL, $1, $2, $3) RETURNING id',
-      [email.trim(), name?.trim() || null, passwordHash],
+      `INSERT INTO users (github_user_id, email, name, password_hash, must_change_password, email_verified_at)
+       VALUES (NULL, $1, $2, $3, $4, CASE WHEN $5::boolean THEN now() ELSE NULL END) RETURNING id`,
+      [email.trim(), name?.trim() || null, passwordHash, flags.mustChangePassword, flags.emailVerified],
     );
-    return rows[0].id as string;
+    return { id: rows[0].id as string, created: true };
   }
 
   async list(orgId: string) {
@@ -77,6 +96,8 @@ export class UsersService {
       const { rows } = await client.query(
         `SELECT om.role, om.created_at, u.id AS user_id, u.name, u.email, u.avatar_url,
                 (u.password_hash IS NOT NULL) AS claimed,
+                u.email_verified_at,
+                (SELECT count(*)::int FROM webauthn_credentials c WHERE c.user_id = u.id) AS passkey_count,
                 COALESCE(
                   (SELECT jsonb_agg(jsonb_build_object('id', r.id, 'full_name', r.full_name) ORDER BY r.full_name)
                    FROM repository_members rm JOIN repositories r ON r.id = rm.repository_id
@@ -111,7 +132,12 @@ export class UsersService {
     }
 
     const passwordHash = await hash(input.password, BCRYPT_ROUNDS);
-    const userId = await this.findOrCreatePendingUser(input.email, input.name, passwordHash);
+    // Contraseña fijada por un admin = temporal: la persona debe cambiarla en su primer
+    // ingreso (y puede enrolar su passkey desde "Mi perfil").
+    const { id: userId, created } = await this.findOrCreatePendingUser(input.email, input.name, passwordHash, {
+      mustChangePassword: true,
+      emailVerified: false,
+    });
 
     await withTenant(orgId, async (client) => {
       const { rows: existingMembership } = await client.query(
@@ -127,10 +153,18 @@ export class UsersService {
       ]);
     });
 
-    return this.getOne(orgId, userId);
+    // Un fallo de envío (SMTP sin configurar) no debe impedir crear el usuario; el admin
+    // puede reenviar la verificación desde la lista cuando SMTP esté listo.
+    const verificationEmailSent = created ? await this.account.sendVerificationEmail(userId) : false;
+    return { ...(await this.getOne(orgId, userId)), verification_email_sent: verificationEmailSent };
   }
 
-  async update(orgId: string, userId: string, input: { name?: string; role?: string; password?: string }) {
+  async update(
+    orgId: string,
+    userId: string,
+    input: { name?: string; role?: string; password?: string },
+    actorUserId: string,
+  ) {
     if (input.role && !['admin', 'user'].includes(input.role)) throw new BadRequestException('rol inválido');
     if (input.password !== undefined && input.password.length < 8) {
       throw new BadRequestException('la contraseña debe tener al menos 8 caracteres');
@@ -158,10 +192,42 @@ export class UsersService {
 
     if (input.password) {
       const passwordHash = await hash(input.password, BCRYPT_ROUNDS);
-      await getPool().query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, userId]);
+      if (userId === actorUserId) {
+        // Cambio sobre sí mismo: es lo mismo que hacerlo desde "Mi perfil", sin forzar nada.
+        await getPool().query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, userId]);
+      } else {
+        // Contraseña fijada por un admin para otra persona: temporal. Cierra las sesiones
+        // abiertas de esa cuenta, la obliga a cambiarla y levanta un bloqueo por intentos.
+        await getPool().query(
+          `UPDATE users
+           SET password_hash = $1, must_change_password = true, session_version = session_version + 1,
+               failed_login_attempts = 0, locked_until = NULL
+           WHERE id = $2`,
+          [passwordHash, userId],
+        );
+      }
     }
 
     return this.getOne(orgId, userId);
+  }
+
+  private async assertMember(orgId: string, userId: string): Promise<void> {
+    await withTenant(orgId, async (client) => {
+      const { rows } = await client.query('SELECT 1 FROM org_memberships WHERE organization_id = $1 AND user_id = $2', [orgId, userId]);
+      if (!rows[0]) throw new NotFoundException('usuario no encontrado en esta organización');
+    });
+  }
+
+  /** Quita todas las passkeys de alguien (y cierra sus sesiones) — la salida cuando perdió
+   * sus dispositivos. Después puede entrar con su contraseña y registrar una nueva. */
+  async revokePasskeys(orgId: string, userId: string, actorUserId: string, client: ClientInfo): Promise<{ revoked: number }> {
+    await this.assertMember(orgId, userId);
+    return { revoked: await this.passkeys.revokeAll(userId, actorUserId, client) };
+  }
+
+  async resendVerification(orgId: string, userId: string): Promise<{ sent: boolean }> {
+    await this.assertMember(orgId, userId);
+    return { sent: await this.account.sendVerificationEmail(userId) };
   }
 
   /** Quita la membresía (y el acceso a repos) de ESTA organización — no borra la fila

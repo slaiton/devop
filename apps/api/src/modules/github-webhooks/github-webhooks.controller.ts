@@ -1,8 +1,11 @@
 import { Body, Controller, Headers, Post, Req, UnauthorizedException } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { GithubWebhooksService } from './github-webhooks.service';
 
+// GitHub manda todos sus webhooks desde unas pocas IPs: limitarlos por IP los rechazaría.
+@SkipThrottle()
 @Controller('webhooks/github')
 export class GithubWebhooksController {
   constructor(private readonly service: GithubWebhooksService) {}

@@ -1,8 +1,10 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
+import { useRouter } from 'next/navigation';
 
 export function ChangePasswordForm() {
+  const router = useRouter();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -27,6 +29,7 @@ export function ChangePasswordForm() {
       setSaved(true);
       setCurrentPassword('');
       setNewPassword('');
+      router.refresh();
     } catch (err) {
       setError((err as Error).message);
     } finally {

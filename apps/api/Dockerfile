@@ -1,4 +1,4 @@
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /repo
 COPY package.json package-lock.json* ./
 COPY tsconfig.base.json ./
@@ -30,7 +30,7 @@ RUN npm run build --workspace=@devsentinel/database \
  && npm run build --workspace=@devsentinel/github-apps \
  && npm run build --workspace=@devsentinel/api
 
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /repo
 COPY --from=build --chown=node:node /repo/node_modules node_modules

@@ -11,11 +11,13 @@ export function CreateUserForm() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setNotice(null);
     try {
       const res = await fetch('/api/users', {
         method: 'POST',
@@ -26,6 +28,12 @@ export function CreateUserForm() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.message ?? `error ${res.status}`);
       }
+      const created = await res.json().catch(() => ({}));
+      setNotice(
+        created.verification_email_sent
+          ? 'Usuario creado. Le enviamos un correo para verificar su dirección; la contraseña que fijaste es temporal.'
+          : 'Usuario creado, pero no se pudo enviar el correo de verificación (¿SMTP sin configurar?). Puedes reenviarlo desde su tarjeta cuando esté listo. La contraseña que fijaste es temporal.',
+      );
       setEmail('');
       setName('');
       setRole('user');
@@ -75,6 +83,7 @@ export function CreateUserForm() {
       <button type="submit" disabled={loading}>
         {loading ? 'Registrando…' : 'Registrar usuario'}
       </button>
+      {notice && <p className="status-ok">{notice}</p>}
       {error && <p className="error-text">{error}</p>}
     </form>
   );

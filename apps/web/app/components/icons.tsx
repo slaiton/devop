@@ -121,3 +121,13 @@ export function AlertCircleIcon(props: IconProps) {
     </svg>
   );
 }
+
+export function PasskeyIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <circle cx="9" cy="8" r="4" />
+      <path d="M2 21c0-3.9 3.1-7 7-7 1.4 0 2.7.4 3.8 1.1" />
+      <path d="M16 13.5l-3.5 3.5V21h3v-1.5h1.5V18l3.5-3.5a3 3 0 1 0-4.5-1Z" />
+    </svg>
+  );
+}

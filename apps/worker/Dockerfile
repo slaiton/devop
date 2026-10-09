@@ -1,4 +1,4 @@
-FROM node:20-slim AS deps
+FROM node:22-slim AS deps
 WORKDIR /repo
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
@@ -35,7 +35,7 @@ RUN npm run build --workspace=@devsentinel/database \
  && npm run build --workspace=@devsentinel/github-apps \
  && npm run build --workspace=@devsentinel/worker
 
-FROM node:20-slim AS runtime
+FROM node:22-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production

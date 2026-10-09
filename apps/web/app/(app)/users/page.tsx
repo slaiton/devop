@@ -41,8 +41,9 @@ export default async function UsersPage() {
     <>
       <h1>Usuarios</h1>
       <p style={{ color: 'var(--ink-muted)' }}>
-        El login con GitHub solo funciona para correos ya registrados aquí. Un usuario "pendiente" puede
-        iniciar sesión apenas su cuenta de GitHub tenga ese mismo correo como público.
+        Las personas entran con passkey (huella, rostro o PIN del dispositivo) o con su contraseña, y solo si su
+        correo está registrado aquí. La contraseña que fijas al crear o restablecer a alguien es temporal: la
+        persona debe cambiarla en su primer ingreso, y desde "Mi perfil" puede registrar su passkey.
       </p>
 
       {users.length === 0 ? (

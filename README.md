@@ -38,9 +38,14 @@ sin perder tiempo saltando entre pestañas de GitHub.
 - **Roles y permisos reales** — admin ve todo; un usuario solo ve los repos que tiene
   asignados y todos los commits de esos repos, con un CRUD para gestionar personas,
   roles y accesos sin tocar la base de datos.
-- **Login validado, no autoservicio** — iniciar sesión con GitHub exige que el correo
-  ya esté registrado por un admin; sesiones cortas (4h) que exigen re-validar con
-  GitHub al expirar.
+- **Passkeys y contraseña** — entrás con huella, rostro o el PIN de tu dispositivo
+  (WebAuthn, sin contraseña que filtrar ni phishing posible); la contraseña sigue
+  disponible como segunda opción. Sesiones cortas (4h), bloqueo por intentos fallidos,
+  correos verificados, avisos de seguridad y recuperación de cuenta. Nunca se guarda
+  ningún dato biométrico: solo la clave pública de cada passkey.
+- **Varias GitHub Apps por organización** — cada App con sus propias credenciales,
+  instalaciones y webhook, gestionadas desde `/accounts` (con diagnóstico del webhook
+  incluido), sin tocar archivos de configuración.
 - **Multi-tenant de verdad** — aislamiento por organización con Row-Level Security en
   Postgres, no un filtro `WHERE` que alguien puede olvidar.
 - **Dashboard con todo a mano** — pestañas por repo (pushes paginados, Pull Requests,
@@ -65,8 +70,8 @@ cd devsentinel
 ### 2. Configurar variables de entorno
 
 Copiá `.env.example` a `.env` y completá los valores. Estas son las únicas que se
-definen por variable de entorno — GitHub App, LLM y SMTP se configuran después, desde
-la UI (`/setup`), cifrados en la base de datos:
+definen por variable de entorno — las GitHub Apps, el LLM y el SMTP se configuran después
+desde la UI, cifrados en la base de datos:
 
 ```bash
 cp .env.example .env
@@ -75,10 +80,10 @@ cp .env.example .env
 Como mínimo hace falta:
 
 - `POSTGRES_PASSWORD` / `APP_DB_PASSWORD` (y sus `DATABASE_URL` / `MIGRATIONS_DATABASE_URL` correspondientes).
-- `JWT_SECRET` — firma las sesiones; no lo cambies después sin necesidad.
-- `CONFIG_ENCRYPTION_KEY` — genera con `openssl rand -hex 32`, cifra los secretos guardados en `/setup`.
-- `GITHUB_OAUTH_CALLBACK_URL` — `https://tu-dominio/api/auth/github/callback`.
-- `PUBLIC_DOMAIN` y `PUBLIC_WEB_ORIGIN` — tu dominio público.
+- `JWT_SECRET` — firma las sesiones; no lo cambies después sin necesidad (cierra todas las sesiones).
+- `CONFIG_ENCRYPTION_KEY` — genera con `openssl rand -hex 32`, cifra los secretos guardados desde la UI.
+- `PUBLIC_DOMAIN` y `PUBLIC_WEB_ORIGIN` — tu dominio público (`https://…`). Las passkeys quedan atadas a
+  ese dominio: no lo cambies después de que la gente registre las suyas.
 
 ### 3. Levantar los servicios
 
@@ -94,37 +99,39 @@ definidas y espera a que cada servicio quede sano antes de seguir con el siguien
 ```
 
 Las migraciones de base de datos corren solas al arrancar el contenedor `api` — no
-hay un paso manual aparte.
+hay un paso manual aparte. Las imágenes usan Node 22.
 
-### 4. Crear la GitHub App
+### 4. Registrar la organización y el primer admin
+
+Entrá a `https://tu-dominio/setup`: elegí el identificador de la organización y el
+correo y la contraseña del primer admin. Con eso ya podés iniciar sesión.
+
+### 5. Configurar el LLM y el correo
+
+Ya logueado, en `/settings`: el proveedor de LLM (base URL, modelo, API key) y el SMTP
+(sirve cualquier cuenta de correo; es lo que envía la verificación de correo, la
+recuperación de contraseña y las notificaciones a los autores de cada push).
+
+### 6. Crear y conectar una GitHub App
 
 En GitHub (`Settings → Developer settings → GitHub Apps → New GitHub App`):
 
-- **Callback URL:** `https://tu-dominio/api/auth/github/callback`
-- **Webhook URL:** `https://tu-dominio/api/webhooks/github`
+- **Webhook URL:** `https://tu-dominio/api/webhooks/github` (la misma para todas las Apps).
+- **Setup URL:** `https://tu-dominio/api/github-apps/callback`, con **"Redirect on update"** activado.
 - **Permisos de repositorio:** `Contents: Read`, `Pull requests: Read & Write`,
   `Checks: Read & Write`, `Issues: Read & Write`, `Metadata: Read`.
-- **Eventos de webhook:** `push`, `pull_request`, `installation`,
-  `installation_repositories`, `issues`, `issue_comment`.
-- Activá **"Request user authorization (OAuth) during installation"** y **"Sign in with GitHub App"** — es el mismo App el que instala y el que autentica, no hace falta una OAuth App aparte.
+- **Eventos de webhook:** `push`, `pull_request`, `issues`, `issue_comment`.
 
-Guardá el App ID, el slug, el Client ID/Secret, la private key (PEM) y el webhook
-secret — se piden en el paso siguiente.
+Después, en `/accounts`: **Agregar GitHub App** (App ID, slug, Client ID/Secret, private
+key PEM y webhook secret) y **Conectar una cuenta nueva** — o **Sincronizar instalaciones
+existentes** si la App ya estaba instalada. Si una App no recibe pushes, **Diagnosticar
+webhook** te dice por qué (URL, eventos sin suscribir, secret que no coincide) y puede
+corregir la URL y el secret en GitHub y reenviar las entregas fallidas.
 
-### 5. Registrar la organización, el primer admin y las credenciales
+### 7. Entrar con passkey
 
-Entrá a `https://tu-dominio/setup`. Hay dos formularios en ese orden — el segundo te
-saca de la pantalla apenas lo guardás, así que completá primero el de organización:
-
-1. **Organización y primer admin** — la cuenta/organización de GitHub donde vas a
-   instalar la App (debe coincidir exactamente) y el correo del primer admin.
-2. **GitHub App / LLM / SMTP** — las credenciales del paso 4, más el proveedor de LLM
-   (base URL, modelo, API key) y, opcionalmente, SMTP para las notificaciones por
-   correo.
-
-### 6. Instalar la App y entrar
-
-Instalá la GitHub App en la cuenta/organización que registraste, e iniciá sesión desde
-`https://tu-dominio` con esa misma cuenta de GitHub (el correo debe coincidir con el
-que registraste como admin). Desde ahí ya podés invitar más gente desde `/users` y
-configurar cada repo desde su pestaña de Configuración.
+Desde `/me` ("Mi perfil") cada persona agrega su passkey (conviene registrar al menos dos:
+computador y teléfono). Desde ahí la pantalla de inicio de sesión ofrece "Entrar con
+passkey". Las contraseñas que fija un admin son temporales: la persona debe cambiarlas
+en su primer ingreso. Podés invitar más gente desde `/users` y configurar cada repo desde
+su pestaña de Configuración.

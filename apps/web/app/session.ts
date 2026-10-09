@@ -8,6 +8,9 @@ export interface Session {
   avatarUrl: string | null;
   email: string | null;
   orgName: string | null;
+  emailVerified: boolean;
+  mustChangePassword: boolean;
+  passkeyCount: number;
 }
 
 export async function getSession(): Promise<Session | null> {

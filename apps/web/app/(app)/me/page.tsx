@@ -3,6 +3,8 @@ import Link from 'next/link';
 import { getSession } from '../../session';
 import { GateBadge } from '../../GateBadge';
 import { ChangePasswordForm } from '../../components/ChangePasswordForm';
+import { EmailVerificationNotice } from '../../components/EmailVerificationNotice';
+import { PasskeysManager } from '../../components/PasskeysManager';
 
 interface MyProfile {
   developer_id: string | null;
@@ -71,6 +73,13 @@ export default async function MyProfilePage() {
           <span className="chip">NO APTO: {profile.no_apto_count}</span>
           <span className="chip">Score promedio: {profile.avg_quality_score ?? '-'}</span>
         </p>
+      </div>
+
+      {!session.emailVerified && <EmailVerificationNotice />}
+
+      <h1>Passkeys</h1>
+      <div className="card">
+        <PasskeysManager />
       </div>
 
       <h1>Cambiar mi contraseña</h1>

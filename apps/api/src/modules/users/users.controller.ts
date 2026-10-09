@@ -1,8 +1,11 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
 import { RolesGuard } from '../../common/roles.guard';
 import { Roles } from '../../common/roles.decorator';
 import { CurrentOrg } from '../../common/currentOrg.decorator';
+import { CurrentUser } from '../../common/currentUser.decorator';
+import { clientInfo } from '../../common/session';
 import { UsersService } from './users.service';
 
 @Controller('users')
@@ -51,10 +54,30 @@ export class UsersController {
   @Roles('admin')
   update(
     @CurrentOrg() orgId: string,
+    @CurrentUser() actorUserId: string,
     @Param('userId') userId: string,
     @Body() body: { name?: string; role?: string; password?: string },
   ) {
-    return this.usersService.update(orgId, userId, body);
+    return this.usersService.update(orgId, userId, body, actorUserId);
+  }
+
+  @Delete(':userId/passkeys')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  revokePasskeys(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() actorUserId: string,
+    @Param('userId') userId: string,
+    @Req() req: Request,
+  ) {
+    return this.usersService.revokePasskeys(orgId, userId, actorUserId, clientInfo(req));
+  }
+
+  @Post(':userId/resend-verification')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  resendVerification(@CurrentOrg() orgId: string, @Param('userId') userId: string) {
+    return this.usersService.resendVerification(orgId, userId);
   }
 
   @Delete(':userId')

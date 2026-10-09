@@ -8,6 +8,7 @@
     "dev": "next dev"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^14.0.0",
     "next": "^15.1.0",
     "parse-diff": "^0.11.1",
     "react": "^19.0.0",

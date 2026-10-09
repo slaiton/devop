@@ -1,4 +1,17 @@
 {$PUBLIC_DOMAIN} {
+	# HTTPS lo emite Caddy solo (Let's Encrypt). WebAuthn exige un contexto seguro: sin HTTPS
+	# las passkeys no funcionan (salvo en localhost).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		# La app no debe poder incrustarse en el iframe de otro sitio (clickjacking).
+		Content-Security-Policy "frame-ancestors 'none'"
+		# Las passkeys solo pueden usarse desde esta misma página, no desde iframes de terceros.
+		Permissions-Policy "publickey-credentials-get=(self), publickey-credentials-create=(self)"
+		-Server
+	}
+
 	handle /api/* {
 		reverse_proxy api:3000
 	}

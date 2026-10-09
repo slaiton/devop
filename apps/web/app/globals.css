@@ -992,3 +992,100 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- Passkeys / cuenta ---- */
+
+.btn-secondary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-secondary:hover {
+  border-color: var(--accent);
+}
+.btn-secondary:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+.btn-primary svg {
+  flex-shrink: 0;
+}
+.login-hint {
+  margin: -0.3rem 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  text-align: center;
+}
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+  margin: 0.4rem 0 0.1rem;
+}
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.login-link {
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
+.login-ok {
+  background: var(--success-soft);
+  color: var(--success);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.75rem;
+  font-size: 0.82rem;
+  text-align: left;
+}
+.passkey-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+}
+.passkey-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+  background: var(--surface);
+}
+.passkey-row .passkey-main {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.passkey-row .passkey-name {
+  font-weight: 700;
+}
+.passkey-row .passkey-meta {
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+.reauth-panel {
+  border: 1px solid var(--warning);
+  background: var(--warning-soft);
+  border-radius: var(--radius-sm);
+  padding: 0.8rem 1rem;
+  margin: 0.75rem 0;
+}

@@ -62,6 +62,10 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY}
       PUBLIC_WEB_ORIGIN: ${PUBLIC_WEB_ORIGIN}
+      # Passkeys: por defecto salen de PUBLIC_WEB_ORIGIN (RP ID = su hostname). Solo definir para
+      # casos especiales; el RP ID no se puede cambiar una vez registradas passkeys.
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+      WEBAUTHN_ORIGINS: ${WEBAUTHN_ORIGINS:-}
     networks:
       - devsentinel_net
     depends_on:

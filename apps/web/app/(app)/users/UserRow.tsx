@@ -21,6 +21,8 @@ export interface UserRowData {
   email: string | null;
   role: string;
   claimed: boolean;
+  email_verified_at: string | null;
+  passkey_count: number;
   repositories: RepoRef[];
   developers: DeveloperRef[];
 }
@@ -54,10 +56,12 @@ export function UserRow({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [passwordReset, setPasswordReset] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function run(fn: () => Promise<any>) {
     setLoading(true);
     setError(null);
+    setNotice(null);
     try {
       await fn();
       router.refresh();
@@ -85,8 +89,52 @@ export function UserRow({
           <span className="status-ok">activo</span>
         ) : (
           <span className="status-warn">pendiente (no ha iniciado sesión)</span>
-        )}
+        )}{' '}
+        {user.email_verified_at ? (
+          <span className="chip">correo verificado</span>
+        ) : (
+          <span className="chip status-warn">correo sin verificar</span>
+        )}{' '}
+        <span className="chip">
+          {user.passkey_count} passkey{user.passkey_count === 1 ? '' : 's'}
+        </span>
       </p>
+
+      {(!user.email_verified_at || user.passkey_count > 0) && (
+        <p>
+          {!user.email_verified_at && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() =>
+                run(async () => {
+                  const { sent } = await call(`/api/users/${user.user_id}/resend-verification`, 'POST');
+                  setNotice(sent ? 'Correo de verificación enviado.' : 'No se pudo enviar: SMTP no está configurado.');
+                })
+              }
+            >
+              Reenviar verificación de correo
+            </button>
+          )}{' '}
+          {user.passkey_count > 0 && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                if (window.confirm('¿Revocar TODAS las passkeys de este usuario y cerrar sus sesiones? Podrá entrar con su contraseña y registrar una nueva.')) {
+                  run(async () => {
+                    await call(`/api/users/${user.user_id}/passkeys`, 'DELETE');
+                    setNotice('Passkeys revocadas.');
+                  });
+                }
+              }}
+            >
+              Revocar passkeys
+            </button>
+          )}
+        </p>
+      )}
+      {notice && <p className="status-ok">{notice}</p>}
 
       <p>
         <label>
