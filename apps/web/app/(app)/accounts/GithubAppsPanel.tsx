@@ -85,7 +85,7 @@ export function GithubAppsPanel({
   const [syncingInstallations, setSyncingInstallations] = useState(false);
   const [syncInstallationsResult, setSyncInstallationsResult] = useState<string | null>(null);
   const [webhookReports, setWebhookReports] = useState<Record<string, WebhookReport>>({});
-  const [webhookBusy, setWebhookBusy] = useState<'diagnose' | 'repair' | 'redeliver' | null>(null);
+  const [webhookBusy, setWebhookBusy] = useState<'diagnose' | 'repair' | 'redeliver' | 'test' | null>(null);
   const [webhookMessage, setWebhookMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -176,8 +176,8 @@ export function GithubAppsPanel({
     }
   }
 
-  async function webhookRequest<T>(app: GithubAppRow, kind: 'diagnose' | 'repair' | 'redeliver'): Promise<T> {
-    const path = { diagnose: 'webhook-diagnostics', repair: 'webhook-repair', redeliver: 'webhook-redeliver' }[kind];
+  async function webhookRequest<T>(app: GithubAppRow, kind: 'diagnose' | 'repair' | 'redeliver' | 'test'): Promise<T> {
+    const path = { diagnose: 'webhook-diagnostics', repair: 'webhook-repair', redeliver: 'webhook-redeliver', test: 'webhook-test' }[kind];
     const res = await fetch(`/api/github-apps/${app.id}/${path}`, { method: kind === 'diagnose' ? 'GET' : 'POST' });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -186,7 +186,7 @@ export function GithubAppsPanel({
     return res.json();
   }
 
-  async function handleWebhook(app: GithubAppRow, kind: 'diagnose' | 'repair' | 'redeliver') {
+  async function handleWebhook(app: GithubAppRow, kind: 'diagnose' | 'repair' | 'redeliver' | 'test') {
     if (
       kind === 'repair' &&
       !window.confirm(
@@ -202,6 +202,13 @@ export function GithubAppsPanel({
       if (kind === 'repair') {
         const { url } = await webhookRequest<{ url: string }>(app, 'repair');
         setWebhookMessage(`Webhook actualizado en GitHub: ${url}. Mandá un push de prueba y volvé a diagnosticar.`);
+      } else if (kind === 'test') {
+        const { redelivered } = await webhookRequest<{ redelivered: { event: string } | null }>(app, 'test');
+        setWebhookMessage(
+          redelivered
+            ? `Se reenvió la última entrega de GitHub (evento "${redelivered.event}"). Si el camino funciona aparece en segundos en el registro de Webhooks.`
+            : 'GitHub nunca intentó entregar nada para esta App: el problema está en su configuración (eventos sin suscribir, webhook inactivo, App sin instalar en el repo).',
+        );
       } else if (kind === 'redeliver') {
         const { redelivered } = await webhookRequest<{ redelivered: number }>(app, 'redeliver');
         setWebhookMessage(
@@ -312,7 +319,18 @@ export function GithubAppsPanel({
                     disabled={webhookBusy !== null}
                   >
                     {webhookBusy === 'redeliver' ? 'Reenviando…' : 'Reenviar entregas fallidas'}
+                  </button>{' '}
+                  <button
+                    type="button"
+                    onClick={() => handleWebhook(activeApp, 'test')}
+                    disabled={webhookBusy !== null}
+                  >
+                    {webhookBusy === 'test' ? 'Enviando…' : 'Enviar prueba'}
                   </button>
+                </p>
+                <p style={{ fontSize: '0.85rem' }}>
+                  <a href="/webhooks">Ver el registro de entregas recibidas →</a> (qué llegó de esta App y qué se hizo con
+                  cada evento).
                 </p>
                 {webhookMessage && <p className="status-ok">{webhookMessage}</p>}
                 {webhookReports[activeApp.id] && (

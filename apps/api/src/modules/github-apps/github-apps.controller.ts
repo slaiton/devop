@@ -69,6 +69,14 @@ export class GithubAppsController {
     return this.service.repairWebhook(orgId, id);
   }
 
+  @Post(':id/webhook-test')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  async testWebhook(@CurrentOrg() orgId: string, @Param('id') id: string) {
+    const redelivered = await this.service.testWebhook(orgId, id);
+    return { redelivered };
+  }
+
   @Post(':id/webhook-redeliver')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')

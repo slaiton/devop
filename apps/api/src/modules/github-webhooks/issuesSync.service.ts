@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import type { PoolClient } from 'pg';
-import { getPool, withTenant } from '@devsentinel/database';
+import { withTenant } from '@devsentinel/database';
+import type { WebhookAppContext } from './github-webhooks.service';
+import { ignored, processed, type WebhookOutcome } from './webhookOutcome';
 
 /** Sincroniza los eventos `issues`/`issue_comment` del webhook de GitHub hacia las
  * tablas locales `issues`/`issue_comments` — espejo de TODO issue del repo, no solo
@@ -10,33 +12,44 @@ import { getPool, withTenant } from '@devsentinel/database';
  * repo, para no acoplar los dos servicios). */
 @Injectable()
 export class IssuesSyncService {
-  async handleIssueEvent(payload: any): Promise<void> {
+  async handleIssueEvent(payload: any, ctx: WebhookAppContext): Promise<WebhookOutcome> {
+    const fullName: string | undefined = payload.repository?.full_name;
     // Los eventos de PR-como-issue (comentarios de conversación de un PR) ya se
     // reflejan vía el flujo de `pull_request` — no duplicar acá.
-    if (payload.issue?.pull_request) return;
-
-    const installationId: number | undefined = payload.installation?.id;
-    if (!installationId) return;
-    const orgId = await this.getOrgIdByInstallation(installationId);
-    if (!orgId) return;
+    if (payload.issue?.pull_request) {
+      return ignored('issue_is_pr', { detail: 'es un PR visto como issue: se sincroniza por el flujo de pull_request', repository: fullName });
+    }
+    // La organización es la dueña de la App que mandó el webhook (ya autenticado): no hace falta
+    // adivinarla desde la instalación, que puede no estar enlazada todavía.
+    const orgId = ctx.organizationId;
     const repositoryId = await this.getRepositoryId(orgId, payload.repository.id);
-    if (!repositoryId) return;
+    if (!repositoryId) {
+      return ignored('repo_unregistered', {
+        detail: 'el repositorio todavía no está sincronizado en esta organización (usa "Sincronizar" en Cuentas GitHub)',
+        repository: fullName,
+      });
+    }
 
     const issue = payload.issue;
     await withTenant(orgId, async (client) => {
       await this.upsertIssueMirror(client, orgId, repositoryId, issue);
     });
+    return processed('issue_synced', { detail: `issue #${issue.number} sincronizado`, repository: fullName });
   }
 
-  async handleIssueCommentEvent(payload: any): Promise<void> {
-    if (payload.issue?.pull_request) return;
-
-    const installationId: number | undefined = payload.installation?.id;
-    if (!installationId) return;
-    const orgId = await this.getOrgIdByInstallation(installationId);
-    if (!orgId) return;
+  async handleIssueCommentEvent(payload: any, ctx: WebhookAppContext): Promise<WebhookOutcome> {
+    const fullName: string | undefined = payload.repository?.full_name;
+    if (payload.issue?.pull_request) {
+      return ignored('issue_is_pr', { detail: 'es un comentario de conversación de un PR', repository: fullName });
+    }
+    const orgId = ctx.organizationId;
     const repositoryId = await this.getRepositoryId(orgId, payload.repository.id);
-    if (!repositoryId) return;
+    if (!repositoryId) {
+      return ignored('repo_unregistered', {
+        detail: 'el repositorio todavía no está sincronizado en esta organización (usa "Sincronizar" en Cuentas GitHub)',
+        repository: fullName,
+      });
+    }
 
     const comment = payload.comment;
 
@@ -62,6 +75,7 @@ export class IssuesSyncService {
         [orgId, issueId, comment.id, comment.user?.login ?? null, comment.body ?? '', comment.created_at, comment.updated_at ?? null],
       );
     });
+    return processed('issue_synced', { detail: `comentario en el issue #${payload.issue?.number} sincronizado`, repository: fullName });
   }
 
   /** Upsert del espejo de un issue por (repository_id, github_issue_number). En
@@ -95,13 +109,6 @@ export class IssuesSyncService {
       ],
     );
     return rows[0].id as string;
-  }
-
-  private async getOrgIdByInstallation(installationId: number): Promise<string | null> {
-    const { rows } = await getPool().query('SELECT resolve_organization_for_installation($1) AS organization_id', [
-      installationId,
-    ]);
-    return rows[0]?.organization_id ?? null;
   }
 
   private async getRepositoryId(orgId: string, githubRepoId: number): Promise<string | null> {

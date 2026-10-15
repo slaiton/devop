@@ -11,6 +11,7 @@ import {
   SettingsIcon,
   ShieldIcon,
   UsersIcon,
+  WebhookIcon,
 } from './icons';
 
 interface NavLink {
@@ -28,6 +29,7 @@ const PRIMARY_LINKS: NavLink[] = [
 const ADMIN_LINKS: NavLink[] = [
   { href: '/users', label: 'Usuarios', icon: UsersIcon },
   { href: '/accounts', label: 'Cuentas GitHub', icon: AccountsIcon },
+  { href: '/webhooks', label: 'Webhooks', icon: WebhookIcon },
   { href: '/settings', label: 'Configuración', icon: SettingsIcon },
 ];
 

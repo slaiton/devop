@@ -257,6 +257,23 @@ export class GithubAppsService {
     });
   }
 
+  /** Reenvía la última entrega que GitHub registró para esta App y, si llega, aparece en el
+   * registro de webhooks en segundos. `null` = GitHub nunca intentó entregar nada. */
+  async testWebhook(orgId: string, githubAppRowId: string): Promise<{ event: string; deliveredAt: string } | null> {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query('SELECT id FROM github_apps WHERE id = $1 AND organization_id = $2', [
+        githubAppRowId,
+        orgId,
+      ]);
+      if (!rows[0]) throw new NotFoundException('GitHub App no encontrada');
+      try {
+        return await (await buildAdapterForApp(client, githubAppRowId)).redeliverLatestWebhook();
+      } catch (err) {
+        throw new BadGatewayException(`GitHub rechazó reenviar la última entrega: ${(err as Error).message}`);
+      }
+    });
+  }
+
   private expectedWebhookUrl(): string {
     const origin = (process.env.PUBLIC_WEB_ORIGIN ?? '').replace(/\/+$/, '');
     return origin ? `${origin}/api/webhooks/github` : '';

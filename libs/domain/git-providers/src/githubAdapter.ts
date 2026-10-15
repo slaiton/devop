@@ -404,6 +404,18 @@ export class GithubAdapter implements GitProviderPort {
     return failed.length;
   }
 
+  /** Reenvía la entrega más reciente que GitHub tiene registrada para esta App: sirve como
+   * prueba de conectividad de punta a punta (GitHub → red → proxy → API → firma) sin tener que
+   * hacer un push. Devuelve null si GitHub nunca intentó entregar nada. */
+  async redeliverLatestWebhook(): Promise<{ event: string; deliveredAt: string } | null> {
+    const client = this.getAppClient();
+    const { data } = await client.apps.listWebhookDeliveries({ per_page: 1 });
+    const latest = data[0];
+    if (!latest) return null;
+    await client.apps.redeliverWebhookDelivery({ delivery_id: latest.id });
+    return { event: latest.event, deliveredAt: latest.delivered_at };
+  }
+
   private getAppClient(): Octokit {
     return new Octokit({
       authStrategy: createAppAuth,

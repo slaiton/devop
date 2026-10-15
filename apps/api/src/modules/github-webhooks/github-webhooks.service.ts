@@ -7,11 +7,22 @@ import { decrypt } from '@devsentinel/settings';
 import { upsertInstallationRepositories } from '@devsentinel/github-apps';
 import { REVIEW_QUEUE_NAME, type ReviewJobPayload } from '@devsentinel/event-contracts';
 import { IssuesSyncService } from './issuesSync.service';
+import { ignored, processed, type WebhookOutcome } from './webhookOutcome';
 
 export interface WebhookAppContext {
   organizationId: string;
   githubAppRowId: string;
 }
+
+export type VerifyResult =
+  | { ok: true; ctx: WebhookAppContext }
+  | {
+      ok: false;
+      reason: 'no_raw_body' | 'missing_app_id' | 'unknown_app' | 'bad_signature';
+      detail: string;
+      githubAppRowId?: string;
+      organizationId?: string;
+    };
 
 @Injectable()
 export class GithubWebhooksService {
@@ -30,16 +41,24 @@ export class GithubWebhooksService {
    * `resolve_github_app` (migración 0025, mismo patrón que
    * `resolve_organization_for_installation`). Varias Apps comparten esta misma URL de
    * webhook sin problema — lo que las distingue es este header, no la ruta — pero eso
-   * hace que un typo en el App ID o el webhook secret guardados en `github_apps` falle
-   * en silencio (GitHub solo ve un 401) si no se loguea acá. */
+   * hace que un typo en el App ID o el webhook secret guardados en `github_apps` se vea
+   * solo como un 401 del lado de GitHub: por eso el motivo exacto se devuelve y queda en
+   * el registro de entregas (/webhooks) además del log del contenedor. */
   async verifyAndResolve(
-    rawBody: Buffer,
+    rawBody: Buffer | undefined,
     signature: string | undefined,
     githubAppId: string | undefined,
-  ): Promise<WebhookAppContext | null> {
+  ): Promise<VerifyResult> {
+    if (!rawBody) {
+      return { ok: false, reason: 'no_raw_body', detail: 'la petición llegó sin cuerpo' };
+    }
     if (!githubAppId) {
       this.logger.warn('webhook rechazado: falta el header X-GitHub-Hook-Installation-Target-ID');
-      return null;
+      return {
+        ok: false,
+        reason: 'missing_app_id',
+        detail: 'falta el header X-GitHub-Hook-Installation-Target-ID (no es un webhook de una GitHub App, o un proxy lo está quitando)',
+      };
     }
     const { rows } = await getPool().query(
       'SELECT organization_id, id, webhook_secret_encrypted FROM resolve_github_app($1)',
@@ -50,7 +69,11 @@ export class GithubWebhooksService {
       this.logger.warn(
         `webhook rechazado: ninguna GitHub App registrada tiene el App ID '${githubAppId}' — revisá que coincida exactamente con el App ID real en github.com/settings/apps`,
       );
-      return null;
+      return {
+        ok: false,
+        reason: 'unknown_app',
+        detail: `ninguna GitHub App registrada tiene el App ID ${githubAppId}: revisa que el App ID guardado en Cuentas GitHub sea el numérico de la App (no el Client ID ni el ID de instalación)`,
+      };
     }
 
     const webhookSecret = decrypt(row.webhook_secret_encrypted);
@@ -59,42 +82,56 @@ export class GithubWebhooksService {
       this.logger.warn(
         `webhook rechazado: firma inválida para la App ID '${githubAppId}' (organización ${row.organization_id}) — el webhook secret guardado en /accounts no coincide con el configurado en github.com para esta App`,
       );
-      return null;
+      return {
+        ok: false,
+        reason: 'bad_signature',
+        detail: 'la firma no coincide: el webhook secret guardado en Cuentas GitHub no es el que tiene configurado esta App en github.com',
+        githubAppRowId: row.id as string,
+        organizationId: row.organization_id as string,
+      };
     }
 
-    return { organizationId: row.organization_id as string, githubAppRowId: row.id as string };
+    return { ok: true, ctx: { organizationId: row.organization_id as string, githubAppRowId: row.id as string } };
   }
 
-  async handleEvent(event: string, payload: any, ctx: WebhookAppContext): Promise<void> {
+  async handleEvent(event: string, payload: any, ctx: WebhookAppContext): Promise<WebhookOutcome> {
     this.logger.log(`webhook aceptado: evento '${event}' para la organización ${ctx.organizationId}`);
+    const action: string | undefined = typeof payload?.action === 'string' ? payload.action : undefined;
+    const withAction = (o: WebhookOutcome): WebhookOutcome => ({ ...o, action: o.action ?? action });
+
     switch (event) {
+      case 'ping':
+        return processed('ping', { detail: 'ping de GitHub recibido: la ruta del webhook y el secret funcionan' });
       case 'installation':
-        if (payload.action === 'created') await this.handleInstallationCreated(payload, ctx);
-        if (payload.action === 'deleted') await this.handleInstallationDeleted(payload, ctx);
-        return;
+        if (action === 'created') return withAction(await this.handleInstallationCreated(payload, ctx));
+        if (action === 'deleted') return withAction(await this.handleInstallationDeleted(payload, ctx));
+        return withAction(ignored('ignored_action', { detail: `installation.${action ?? '?'} no requiere ninguna acción` }));
       case 'installation_repositories':
-        await this.handleInstallationRepositories(payload, ctx);
-        return;
+        return withAction(await this.handleInstallationRepositories(payload, ctx));
       case 'push':
-        await this.handlePush(payload, ctx);
-        return;
+        return withAction(await this.handlePush(payload, ctx));
       case 'pull_request':
-        if (['opened', 'synchronize', 'reopened'].includes(payload.action)) {
-          await this.handlePullRequest(payload, ctx);
+        if (action && ['opened', 'synchronize', 'reopened'].includes(action)) {
+          return withAction(await this.handlePullRequest(payload, ctx));
         }
-        return;
+        return withAction(
+          ignored('ignored_action', {
+            detail: `pull_request.${action ?? '?'} no dispara análisis (solo opened, synchronize y reopened)`,
+            repository: payload?.repository?.full_name,
+          }),
+        );
       case 'issues':
-        await this.issuesSync.handleIssueEvent(payload);
-        return;
+        return withAction(await this.issuesSync.handleIssueEvent(payload, ctx));
       case 'issue_comment':
-        await this.issuesSync.handleIssueCommentEvent(payload);
-        return;
+        return withAction(await this.issuesSync.handleIssueCommentEvent(payload, ctx));
       default:
-        return;
+        return ignored('ignored_event', {
+          detail: `DevSentinel no usa el evento '${event}' (si lo tienes suscrito en la App, puedes quitarlo)`,
+        });
     }
   }
 
-  private async handleInstallationCreated(payload: any, ctx: WebhookAppContext): Promise<void> {
+  private async handleInstallationCreated(payload: any, ctx: WebhookAppContext): Promise<WebhookOutcome> {
     const accountLogin: string = payload.installation.account.login;
     const installationId: number = payload.installation.id;
 
@@ -109,65 +146,93 @@ export class GithubWebhooksService {
 
     const repos: any[] = payload.repositories ?? [];
     await this.upsertRepositories(ctx.organizationId, installationId, repos);
+    return processed('installation_created', { detail: `cuenta ${accountLogin} conectada con ${repos.length} repositorio(s)` });
   }
 
-  private async handleInstallationDeleted(payload: any, ctx: WebhookAppContext): Promise<void> {
+  private async handleInstallationDeleted(payload: any, ctx: WebhookAppContext): Promise<WebhookOutcome> {
     const installationId: number = payload.installation.id;
     await withTenant(ctx.organizationId, async (client) => {
       await client.query(`UPDATE github_installations SET status = 'revoked' WHERE installation_id = $1`, [
         installationId,
       ]);
     });
+    return processed('installation_revoked', { detail: 'la App se desinstaló de esa cuenta' });
   }
 
-  private async handleInstallationRepositories(payload: any, ctx: WebhookAppContext): Promise<void> {
+  private async handleInstallationRepositories(payload: any, ctx: WebhookAppContext): Promise<WebhookOutcome> {
     const installationId: number = payload.installation.id;
     const added: any[] = payload.repositories_added ?? [];
     await this.upsertRepositories(ctx.organizationId, installationId, added);
+    return processed('installation_repos_updated', { detail: `${added.length} repositorio(s) agregado(s) a la instalación` });
   }
 
   /** Regla clave: ningún push válido se descarta en silencio. Los únicos descartes son
-   * deliberados y quedan logueados: tags, borrado de rama, ramas que el admin configuró
-   * para omitir, y duplicados de un commit que ya está en análisis (p. ej. cuando dos
-   * Apps instaladas en la misma cuenta mandan el mismo push, o GitHub reenvía la entrega).
-   * Un repo que todavía no estaba sincronizado NO es motivo para perder el push: se
-   * registra al vuelo con los datos del propio evento. */
-  private async handlePush(payload: any, ctx: WebhookAppContext): Promise<void> {
+   * deliberados y quedan en el registro de entregas con su motivo: tags, borrado de rama,
+   * ramas que el admin configuró para omitir, y duplicados de un commit que ya está en
+   * análisis (p. ej. cuando dos Apps instaladas en la misma cuenta mandan el mismo push, o
+   * GitHub reenvía la entrega). Un repo que todavía no estaba sincronizado NO es motivo
+   * para perder el push: se registra al vuelo con los datos del propio evento. */
+  private async handlePush(payload: any, ctx: WebhookAppContext): Promise<WebhookOutcome> {
+    const fullName = String(payload.repository?.full_name);
+    const ref = String(payload.ref ?? '');
     const installationId: number | undefined = payload.installation?.id;
     if (!installationId) {
-      this.logger.warn(`push de ${payload.repository?.full_name} sin installation.id en el payload — no se puede analizar`);
-      return;
+      this.logger.warn(`push de ${fullName} sin installation.id en el payload — no se puede analizar`);
+      return ignored('no_installation', {
+        detail: 'el payload no trae installation.id: no es un evento de una GitHub App instalada',
+        repository: fullName,
+        ref,
+      });
     }
     const orgId = ctx.organizationId;
-    const fullName = String(payload.repository.full_name);
     const [owner, repo] = fullName.split('/');
 
-    const ref = String(payload.ref ?? '');
     if (!ref.startsWith('refs/heads/')) {
       this.logger.log(`push ignorado: ${fullName} ${ref} no es una rama`);
-      return;
+      return ignored('not_a_branch', { detail: `${ref} no es una rama (¿un tag?)`, repository: fullName, ref });
     }
     const commitSha: string = payload.after;
     if (!commitSha || commitSha === '0000000000000000000000000000000000000000') {
       this.logger.log(`push ignorado: ${fullName} ${ref} fue un borrado de rama`);
-      return;
+      return ignored('branch_deleted', { detail: 'el push borró la rama', repository: fullName, ref });
     }
     const branch = ref.slice('refs/heads/'.length);
 
     let repository = await this.getRepositoryForPush(orgId, payload.repository.id);
+    let registeredNow = false;
     if (!repository) {
       repository = await this.registerRepositoryFromEvent(ctx, payload, installationId, owner);
-      if (!repository) return;
+      if (!repository) {
+        return {
+          outcome: 'error',
+          reason: 'repo_unregistered',
+          detail: 'el repositorio no estaba sincronizado y no se pudo registrar (¿ya existe en otra organización?)',
+          repository: fullName,
+          ref,
+          commitSha,
+        };
+      }
+      registeredNow = true;
     }
 
     if (repository.ignored_push_branches.includes(branch)) {
       this.logger.log(`push ignorado: ${fullName}@${branch} está en la lista de ramas a omitir`);
-      return;
+      return ignored('ignored_branch', {
+        detail: `la rama "${branch}" está en la lista de ramas a omitir de este repo (se cambia en la pestaña Configuración del repositorio); por defecto se omite la rama principal`,
+        repository: fullName,
+        ref,
+        commitSha,
+      });
     }
 
     if (await this.hasActiveReviewRunForPush(orgId, repository.id, commitSha)) {
       this.logger.log(`push duplicado: ${fullName}@${commitSha.slice(0, 7)} ya está analizado o en análisis`);
-      return;
+      return ignored('duplicate', {
+        detail: 'ese commit ya tiene un análisis en curso o terminado (p. ej. lo mandó otra App instalada en el mismo repo, o GitHub reenvió la entrega)',
+        repository: fullName,
+        ref,
+        commitSha,
+      });
     }
 
     const authorName: string | null = payload.head_commit?.author?.name ?? null;
@@ -195,6 +260,13 @@ export class GithubWebhooksService {
       repo,
       commitSha,
       branch,
+    });
+    return processed(registeredNow ? 'repo_registered_queued' : 'queued', {
+      detail: registeredNow ? 'repositorio registrado al vuelo y análisis encolado' : 'análisis encolado',
+      repository: fullName,
+      ref,
+      commitSha,
+      reviewRunId,
     });
   }
 
@@ -267,22 +339,34 @@ export class GithubWebhooksService {
     }
   }
 
-  private async handlePullRequest(payload: any, ctx: WebhookAppContext): Promise<void> {
+  private async handlePullRequest(payload: any, ctx: WebhookAppContext): Promise<WebhookOutcome> {
+    const fullName = String(payload.repository?.full_name);
     const installationId: number | undefined = payload.installation?.id;
     if (!installationId) {
-      this.logger.warn(`pull_request de ${payload.repository?.full_name} sin installation.id en el payload — no se puede analizar`);
-      return;
+      this.logger.warn(`pull_request de ${fullName} sin installation.id en el payload — no se puede analizar`);
+      return ignored('no_installation', {
+        detail: 'el payload no trae installation.id: no es un evento de una GitHub App instalada',
+        repository: fullName,
+      });
     }
     const orgId = ctx.organizationId;
 
-    const [owner, repo] = String(payload.repository.full_name).split('/');
+    const [owner, repo] = fullName.split('/');
     let repositoryId = await this.getRepositoryId(orgId, payload.repository.id);
     if (!repositoryId) {
       repositoryId = (await this.registerRepositoryFromEvent(ctx, payload, installationId, owner))?.id ?? null;
-      if (!repositoryId) return;
+      if (!repositoryId) {
+        return {
+          outcome: 'error',
+          reason: 'repo_unregistered',
+          detail: 'el repositorio no estaba sincronizado y no se pudo registrar (¿ya existe en otra organización?)',
+          repository: fullName,
+        };
+      }
     }
 
     const pr = payload.pull_request;
+    const ref = pr.head.ref as string;
     const pullRequestId = await withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `INSERT INTO pull_requests (organization_id, repository_id, github_pr_number, title, source_branch, target_branch, author_login, status)
@@ -306,7 +390,13 @@ export class GithubWebhooksService {
           existingRunId,
         ]);
       });
-      return;
+      return processed('reused_review', {
+        detail: `PR #${pr.number} ligado al análisis ya existente de ese commit`,
+        repository: fullName,
+        ref,
+        commitSha: pr.head.sha,
+        reviewRunId: existingRunId,
+      });
     }
 
     const developerId = await this.resolveDeveloper(orgId, { githubLogin: pr.user.login });
@@ -333,6 +423,13 @@ export class GithubWebhooksService {
       commitSha: pr.head.sha,
       branch: pr.head.ref,
       pullNumber: pr.number,
+    });
+    return processed('queued', {
+      detail: `análisis del PR #${pr.number} encolado`,
+      repository: fullName,
+      ref,
+      commitSha: pr.head.sha,
+      reviewRunId,
     });
   }
 
