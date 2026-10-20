@@ -157,6 +157,7 @@ export default async function HomePage() {
           </div>
           <RepositoriesByApp
             repositories={repositories}
+            showReadiness={isAdmin}
             emptyMessage={
               isAdmin
                 ? 'Todavía no hay repositorios conectados. Conectá una cuenta desde /accounts para empezar.'

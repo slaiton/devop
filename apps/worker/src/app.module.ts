@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { ReviewModule } from './modules/review/review.module';
 import { ReconsiderModule } from './modules/reconsider/reconsider.module';
 import { IssueReplyModule } from './modules/issue-reply/issueReply.module';
+import { ProjectContextModule } from './modules/project-context/projectContext.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { IssueReplyModule } from './modules/issue-reply/issueReply.module';
     ReviewModule,
     ReconsiderModule,
     IssueReplyModule,
+    ProjectContextModule,
   ],
 })
 export class AppModule {}

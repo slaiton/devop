@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { RepoGlyphIcon, CheckIcon, CrossIcon, WarnTriangleIcon } from './icons';
+import { ReadinessLine, fetchReadiness, type RepositoryReadiness } from './repoReadiness';
 
 export interface Repository {
   id: string;
@@ -44,7 +45,34 @@ interface AppGroup {
   repositories: Repository[];
 }
 
-export function RepositoriesByApp({ repositories, emptyMessage }: { repositories: Repository[]; emptyMessage: string }) {
+export function RepositoriesByApp({
+  repositories,
+  emptyMessage,
+  showReadiness = false,
+}: {
+  repositories: Repository[];
+  emptyMessage: string;
+  showReadiness?: boolean;
+}) {
+  // La verificación consulta a GitHub, así que se pide después de pintar la lista (no bloquea la página).
+  const [readiness, setReadiness] = useState<Record<string, RepositoryReadiness>>({});
+  const [readinessLoading, setReadinessLoading] = useState(showReadiness);
+  useEffect(() => {
+    if (!showReadiness) return;
+    let cancelled = false;
+    fetchReadiness()
+      .then((list) => {
+        if (!cancelled) setReadiness(Object.fromEntries(list.map((r) => [r.repositoryId, r])));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setReadinessLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showReadiness]);
+
   const groups = useMemo<AppGroup[]>(() => {
     const byApp = new Map<string, AppGroup>();
     for (const repo of repositories) {
@@ -107,6 +135,7 @@ export function RepositoriesByApp({ repositories, emptyMessage }: { repositories
                     {' · '}
                     {timeAgo(repo.last_activity_at)}
                   </div>
+                  {showReadiness && <ReadinessLine readiness={readiness[repo.id]} loading={readinessLoading} />}
                 </div>
                 {gate && GateIcon && (
                   <span className={`pill ${gate.pill}`}>

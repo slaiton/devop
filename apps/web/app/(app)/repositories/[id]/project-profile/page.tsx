@@ -1,4 +1,5 @@
 import { cookies } from 'next/headers';
+import { GenerateContextButton } from '../GenerateContextButton';
 import { ProjectProfileForm } from '../ProjectProfileForm';
 import { getSession } from '../../../../session';
 
@@ -44,32 +45,48 @@ export default async function RepositoryProjectProfileTab({ params }: { params: 
     return <p>No se pudo cargar el perfil del proyecto.</p>;
   }
 
+  const hasContent = [
+    projectProfile.language,
+    projectProfile.framework,
+    projectProfile.runtime,
+    projectProfile.database,
+    projectProfile.architecture_style,
+    projectProfile.testing_strategy,
+    projectProfile.notes,
+    projectProfile.migrations_policy,
+    projectProfile.compatibility_notes,
+  ].some(Boolean) ||
+    [projectProfile.mandatory_rules, projectProfile.security_rules, projectProfile.conventions].some((l) => (l ?? []).length > 0);
+  // "Curado" = una persona lo configuró; un borrador generado por la IA se puede regenerar completo.
+  const curated = hasContent && !projectProfile.auto_generated_from;
+
+  const initial = {
+    language: projectProfile.language ?? '',
+    framework: projectProfile.framework ?? '',
+    frameworkVersion: projectProfile.framework_version ?? '',
+    runtime: projectProfile.runtime ?? '',
+    database: projectProfile.database ?? '',
+    architectureStyle: projectProfile.architecture_style ?? '',
+    testingStrategy: projectProfile.testing_strategy ?? '',
+    migrationsPolicy: projectProfile.migrations_policy ?? '',
+    compatibilityNotes: projectProfile.compatibility_notes ?? '',
+    notes: projectProfile.notes ?? '',
+    mandatoryRules: (projectProfile.mandatory_rules ?? []).join('\n'),
+    securityRules: (projectProfile.security_rules ?? []).join('\n'),
+    conventions: (projectProfile.conventions ?? []).join('\n'),
+  };
+
   return (
     <>
+      <GenerateContextButton repositoryId={id} curated={curated} />
       {projectProfile.auto_generated_from && (
         <p className="status-warn">
-          Este perfil se generó automáticamente a partir de {projectProfile.auto_generated_from.join(', ')} en el
-          primer push del repositorio. Revisalo: al guardarlo a mano pasa a considerarse configurado por una persona.
+          Este perfil se generó automáticamente a partir de {projectProfile.auto_generated_from.join(', ')} (al
+          generar el contexto o en el primer push del repositorio). Revisalo: al guardarlo a mano pasa a considerarse configurado por una persona.
         </p>
       )}
-      <ProjectProfileForm
-        repositoryId={id}
-        initial={{
-          language: projectProfile.language ?? '',
-          framework: projectProfile.framework ?? '',
-          frameworkVersion: projectProfile.framework_version ?? '',
-          runtime: projectProfile.runtime ?? '',
-          database: projectProfile.database ?? '',
-          architectureStyle: projectProfile.architecture_style ?? '',
-          testingStrategy: projectProfile.testing_strategy ?? '',
-          migrationsPolicy: projectProfile.migrations_policy ?? '',
-          compatibilityNotes: projectProfile.compatibility_notes ?? '',
-          notes: projectProfile.notes ?? '',
-          mandatoryRules: (projectProfile.mandatory_rules ?? []).join('\n'),
-          securityRules: (projectProfile.security_rules ?? []).join('\n'),
-          conventions: (projectProfile.conventions ?? []).join('\n'),
-        }}
-      />
+      {/* La key hace que el formulario se vuelva a montar cuando "Generar contexto" cambia el perfil. */}
+      <ProjectProfileForm key={JSON.stringify(initial)} repositoryId={id} initial={initial} />
     </>
   );
 }

@@ -31,3 +31,12 @@ export interface IssueReplySuggestionJobPayload {
   repositoryId: string;
   requestedBy: string;
 }
+
+export const PROJECT_CONTEXT_QUEUE_NAME = 'project-context-jobs';
+
+export interface ProjectContextJobPayload {
+  runId: string;
+  organizationId: string;
+  repositoryId: string;
+  mode: 'fill' | 'replace';
+}

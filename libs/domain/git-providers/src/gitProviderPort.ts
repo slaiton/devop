@@ -162,6 +162,27 @@ export interface ContextFile {
   content: string;
 }
 
+/** Lo que GitHub tiene registrado de la App a nivel de configuración (no de una instalación). */
+export interface AppOverview {
+  appId: number | null;
+  subscribedEvents: string[];
+  permissions: Record<string, string>;
+  webhookUrl: string | null;
+}
+
+/** Estado real de UNA instalación de la App: los permisos y eventos que el dueño de la cuenta
+ * ya aceptó (pueden ir por detrás de lo que la App declara si cambió permisos y la cuenta
+ * todavía no aprobó el cambio) y si está suspendida. */
+export interface InstallationDetails {
+  installationId: number;
+  accountLogin: string;
+  accountType: string | null;
+  repositorySelection: 'all' | 'selected';
+  events: string[];
+  permissions: Record<string, string>;
+  suspendedAt: string | null;
+}
+
 export interface WebhookDeliverySummary {
   id: number;
   guid: string;
@@ -211,4 +232,7 @@ export interface GitProviderPort {
   listInstallationRepositories(installationId: number): Promise<InstallationRepoSummary[]>;
   listAppInstallations(): Promise<AppInstallationSummary[]>;
   readContextFiles(params: ReadContextFilesParams): Promise<ContextFile[]>;
+  collectProjectContext(params: ReadContextFilesParams): Promise<ContextFile[]>;
+  getAppOverview(): Promise<AppOverview>;
+  getInstallationDetails(installationId: number): Promise<InstallationDetails>;
 }

@@ -128,6 +128,17 @@ existentes** si la App ya estaba instalada. Si una App no recibe pushes, **Diagn
 webhook** te dice por qué (URL, eventos sin suscribir, secret que no coincide) y puede
 corregir la URL y el secret en GitHub y reenviar las entregas fallidas.
 
+Cada repositorio muestra, junto a su nombre (lista de repos y cabecera del repo), si está
+**apto para recibir pushes** o qué le falta: credenciales de la App, URL del webhook, eventos
+`push`/`pull_request` suscritos, permisos **aceptados por la cuenta** (si cambias los permisos
+de una App, el dueño de la cuenta debe aprobarlos en la instalación o GitHub no manda los
+eventos), repo incluido en la instalación, pushes ya recibidos y contexto del proyecto.
+`/webhooks` es el registro de todo lo que GitHub entrega, con el motivo de cada descarte.
+En la pestaña **Perfil del proyecto**, **Generar contexto** lee el README, CLAUDE.md /
+AGENTS.md, los archivos de dependencias y la estructura de carpetas de la rama principal y
+arma el perfil con la IA (si ya lo configuraste a mano, solo completa los campos vacíos).
+`GITHUB_API_URL` (opcional) apunta a otra API compatible, p. ej. GitHub Enterprise Server.
+
 ### 7. Entrar con passkey
 
 Desde `/me` ("Mi perfil") cada persona agrega su passkey (conviene registrar al menos dos:

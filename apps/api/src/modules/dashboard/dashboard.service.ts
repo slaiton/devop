@@ -4,7 +4,12 @@ import type { Queue } from 'bullmq';
 import type { PoolClient } from 'pg';
 import { withTenant } from '@devsentinel/database';
 import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
-import { RECONSIDER_QUEUE_NAME, type ReconsiderJobPayload } from '@devsentinel/event-contracts';
+import {
+  PROJECT_CONTEXT_QUEUE_NAME,
+  RECONSIDER_QUEUE_NAME,
+  type ProjectContextJobPayload,
+  type ReconsiderJobPayload,
+} from '@devsentinel/event-contracts';
 import { EmailService } from '../../common/email.service';
 
 interface Actor {
@@ -19,6 +24,7 @@ export class DashboardService {
   constructor(
     private readonly emailService: EmailService,
     @InjectQueue(RECONSIDER_QUEUE_NAME) private readonly reconsiderQueue: Queue<ReconsiderJobPayload>,
+    @InjectQueue(PROJECT_CONTEXT_QUEUE_NAME) private readonly projectContextQueue: Queue<ProjectContextJobPayload>,
   ) {}
 
   /** admin ve todos los repos de la org; un usuario ("user") solo los que tiene
@@ -269,6 +275,68 @@ export class DashboardService {
         }
       );
     });
+  }
+
+  /** Última corrida de "Generar contexto" del repo (null si nunca se pidió). La UI la consulta
+   * cada pocos segundos mientras esté en cola o corriendo. */
+  async getProjectContextRun(orgId: string, repositoryId: string) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT id, mode, status, sources, applied_fields, error_message, created_at, finished_at
+         FROM project_context_runs WHERE repository_id = $1
+         ORDER BY created_at DESC LIMIT 1`,
+        [repositoryId],
+      );
+      return rows[0] ?? null;
+    });
+  }
+
+  /** Encola la lectura de README / CLAUDE.md / manifiestos y la extracción del perfil con la IA.
+   * Si ya hay una corrida en curso (reciente) devuelve esa en vez de apilar otra: el botón es
+   * fácil de pulsar dos veces y cada corrida gasta tokens del LLM. */
+  async requestProjectContext(orgId: string, userId: string, repositoryId: string, replace: boolean) {
+    const STALE_AFTER_MINUTES = 10; // un worker caído no debe bloquear el botón para siempre
+    const run = await withTenant(orgId, async (client) => {
+      const { rows: repoRows } = await client.query('SELECT 1 FROM repositories WHERE id = $1', [repositoryId]);
+      if (!repoRows[0]) throw new NotFoundException('repositorio no encontrado');
+
+      const { rows: active } = await client.query(
+        `SELECT id, mode, status, sources, applied_fields, error_message, created_at, finished_at
+         FROM project_context_runs
+         WHERE repository_id = $1 AND status IN ('queued', 'running')
+           AND created_at > now() - make_interval(mins => $2)
+         ORDER BY created_at DESC LIMIT 1`,
+        [repositoryId, STALE_AFTER_MINUTES],
+      );
+      if (active[0]) return { row: active[0], created: false };
+
+      const { rows } = await client.query(
+        `INSERT INTO project_context_runs (organization_id, repository_id, mode, requested_by)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, mode, status, sources, applied_fields, error_message, created_at, finished_at`,
+        [orgId, repositoryId, replace ? 'replace' : 'fill', userId],
+      );
+      return { row: rows[0], created: true };
+    });
+
+    if (run.created) {
+      try {
+        await this.projectContextQueue.add(
+          PROJECT_CONTEXT_QUEUE_NAME,
+          { runId: run.row.id, organizationId: orgId, repositoryId, mode: run.row.mode },
+          { attempts: 1, removeOnComplete: true, removeOnFail: 50 },
+        );
+      } catch (err) {
+        await withTenant(orgId, (client) =>
+          client.query(
+            `UPDATE project_context_runs SET status = 'failed', error_message = $2, finished_at = now() WHERE id = $1`,
+            [run.row.id, 'no se pudo encolar la tarea (Redis no disponible)'],
+          ),
+        );
+        throw err;
+      }
+    }
+    return run.row;
   }
 
   async updateProjectProfile(

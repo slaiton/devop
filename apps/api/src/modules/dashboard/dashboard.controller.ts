@@ -147,6 +147,23 @@ export class DashboardController {
     return this.dashboardService.updateProjectProfile(orgId, repositoryId, body);
   }
 
+  @Get('repositories/:repositoryId/project-profile/generation')
+  @Roles('admin')
+  getProjectContextRun(@CurrentOrg() orgId: string, @Param('repositoryId') repositoryId: string) {
+    return this.dashboardService.getProjectContextRun(orgId, repositoryId);
+  }
+
+  @Post('repositories/:repositoryId/project-profile/generate')
+  @Roles('admin')
+  generateProjectContext(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @Param('repositoryId') repositoryId: string,
+    @Body() body: { replace?: boolean } | undefined,
+  ) {
+    return this.dashboardService.requestProjectContext(orgId, userId, repositoryId, body?.replace === true);
+  }
+
   @Post('repositories/:repositoryId/review-runs/:reviewRunId/notify')
   @Roles('admin')
   notifyReviewRun(

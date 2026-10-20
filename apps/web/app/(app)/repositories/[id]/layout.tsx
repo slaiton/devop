@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getSession } from '../../../session';
+import { RepoReadinessPanel } from '../../../components/repoReadiness';
 import { RepoTabs } from './RepoTabs';
 
 interface RepositoryDetail {
@@ -51,6 +52,7 @@ export default async function RepositoryLayout({
       <p style={{ color: 'var(--ink-muted)', marginTop: '-0.5rem' }}>
         Rama por defecto: <code>{repository.default_branch}</code> — Webhook: {repository.webhook_status}
       </p>
+      {session.role === 'admin' && <RepoReadinessPanel repositoryId={id} />}
       <RepoTabs repositoryId={id} isAdmin={session.role === 'admin'} />
       <div className="repo-tab-panel">{children}</div>
     </>

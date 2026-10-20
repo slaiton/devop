@@ -3,6 +3,8 @@ import { Octokit } from '@octokit/rest';
 import { createAppAuth } from '@octokit/auth-app';
 import type {
   AppInstallationSummary,
+  AppOverview,
+  InstallationDetails,
   CheckRunParams,
   CommitRef,
   ContextFile,
@@ -28,6 +30,12 @@ import type {
   SummaryCommentParams,
   UpdateIssueParams,
 } from './gitProviderPort';
+
+/** `GITHUB_API_URL` apunta el adaptador a otra API compatible (GitHub Enterprise Server, o un
+ * simulador en pruebas). Sin definir, es api.github.com. */
+function githubApiBaseUrl(): string | undefined {
+  return process.env.GITHUB_API_URL?.trim() || undefined;
+}
 
 export interface GithubAdapterConfig {
   appId: string;
@@ -326,6 +334,119 @@ export class GithubAdapter implements GitProviderPort {
     return files;
   }
 
+  /** Junta lo que el repo dice de sí mismo para armar su perfil: CLAUDE.md / AGENTS.md, README,
+   * CONTRIBUTING / ARCHITECTURE, manifiestos de dependencias (package.json, composer.json,
+   * pyproject.toml…), versiones de runtime, Docker y un listado de la estructura de carpetas.
+   * Siempre de la rama POR DEFECTO (sin `ref`), igual que `readContextFiles`. Los archivos
+   * vienen ordenados por importancia y el total está acotado para no desbordar el prompt. */
+  async collectProjectContext(params: ReadContextFilesParams): Promise<ContextFile[]> {
+    const client = this.getInstallationClient(params.installationId);
+    const TOTAL_CHARS = 110_000;
+    const instructionName = /^(claude|agents?)\.md$/i;
+    const readmeName = /^readme(\.(md|markdown|rst|txt))?$/i;
+    const docName = /^(contributing|architecture)(\.md)?$/i;
+    const manifestNames = new Set([
+      'package.json', 'composer.json', 'pyproject.toml', 'requirements.txt', 'pipfile', 'setup.py', 'go.mod',
+      'pom.xml', 'build.gradle', 'build.gradle.kts', 'gemfile', 'cargo.toml', 'mix.exs', 'global.json',
+      '.nvmrc', '.node-version', '.python-version', '.php-version', '.ruby-version', '.tool-versions',
+      'dockerfile', 'docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml',
+    ]);
+    const SOURCE_DIRS = new Set(['src', 'app', 'apps', 'lib', 'libs', 'packages', 'cmd', 'internal', 'services']);
+
+    const listDir = async (path: string) => {
+      try {
+        const { data } = await client.repos.getContent({ owner: params.owner, repo: params.repo, path });
+        return Array.isArray(data) ? data : [];
+      } catch (err) {
+        if ((err as { status?: number }).status === 404) return [];
+        throw err;
+      }
+    };
+    const readFile = async (path: string, maxChars: number): Promise<ContextFile | null> => {
+      try {
+        const { data } = await client.repos.getContent({ owner: params.owner, repo: params.repo, path });
+        if (Array.isArray(data) || data.type !== 'file' || !('content' in data) || !data.content) return null;
+        const content = Buffer.from(data.content, 'base64').toString('utf8').slice(0, maxChars);
+        return content.trim() ? { path: data.path, content } : null;
+      } catch (err) {
+        const status = (err as { status?: number }).status;
+        if (status === 404 || status === 403) return null; // archivo >1MB (403) o ya no existe
+        throw err;
+      }
+    };
+
+    const root = await listDir('');
+    if (root.length === 0) return [];
+    const dotClaude = (await listDir('.claude')).filter((e) => e.type === 'file' && instructionName.test(e.name));
+
+    const groups: { entries: { name: string; path: string }[]; maxChars: number }[] = [
+      { entries: [...root.filter((e) => e.type === 'file' && instructionName.test(e.name)), ...dotClaude], maxChars: 40_000 },
+      { entries: root.filter((e) => e.type === 'file' && readmeName.test(e.name)), maxChars: 20_000 },
+      { entries: root.filter((e) => e.type === 'file' && docName.test(e.name)), maxChars: 12_000 },
+      { entries: root.filter((e) => e.type === 'file' && manifestNames.has(e.name.toLowerCase())), maxChars: 8_000 },
+    ];
+
+    const files: ContextFile[] = [];
+    let used = 0;
+    for (const group of groups) {
+      for (const entry of group.entries) {
+        if (used >= TOTAL_CHARS) break;
+        const file = await readFile(entry.path, Math.min(group.maxChars, TOTAL_CHARS - used));
+        if (file) {
+          files.push(file);
+          used += file.content.length;
+        }
+      }
+    }
+
+    // Estructura: la raíz y un nivel dentro de las carpetas de código más comunes. Da pistas
+    // de la arquitectura (apps/, libs/, src/modules…) sin leer código.
+    const lines: string[] = ['(raíz)'];
+    for (const e of root) lines.push(`${e.type === 'dir' ? '[dir] ' : ''}${e.name}`);
+    for (const dir of root.filter((e) => e.type === 'dir' && SOURCE_DIRS.has(e.name)).slice(0, 6)) {
+      lines.push('', `${dir.name}/`);
+      for (const e of (await listDir(dir.path)).slice(0, 40)) lines.push(`  ${e.type === 'dir' ? '[dir] ' : ''}${e.name}`);
+    }
+    files.push({ path: '(estructura de carpetas)', content: lines.join('\n') });
+    return files;
+  }
+
+  /** Configuración de la App en GitHub (JWT de App): eventos suscritos, permisos que declara y
+   * la URL de su webhook. Liviano a propósito (no lista entregas): alimenta el indicador de
+   * aptitud de cada repo. */
+  async getAppOverview(): Promise<AppOverview> {
+    const client = this.getAppClient();
+    const [{ data: app }, { data: hook }] = await Promise.all([
+      client.apps.getAuthenticated(),
+      client.apps.getWebhookConfigForApp(),
+    ]);
+    const info = app as { id?: number; events?: string[]; permissions?: Record<string, string> } | null;
+    return {
+      appId: info?.id ?? null,
+      subscribedEvents: info?.events ?? [],
+      permissions: info?.permissions ?? {},
+      webhookUrl: hook.url ?? null,
+    };
+  }
+
+  /** Estado real de una instalación (JWT de App): qué permisos y eventos aceptó la cuenta. Si la
+   * App pidió permisos nuevos y el dueño de la cuenta no los aprobó, acá siguen faltando y
+   * GitHub no manda los eventos que dependen de ellos (p. ej. `push` sin Contents: Read). */
+  async getInstallationDetails(installationId: number): Promise<InstallationDetails> {
+    const client = this.getAppClient();
+    const { data } = await client.apps.getInstallation({ installation_id: installationId });
+    const account = data.account as { login?: string; slug?: string; type?: string } | null;
+    return {
+      installationId: data.id,
+      accountLogin: account?.login ?? account?.slug ?? 'unknown',
+      accountType: account?.type ?? null,
+      repositorySelection: data.repository_selection === 'selected' ? 'selected' : 'all',
+      events: data.events ?? [],
+      permissions: (data.permissions ?? {}) as Record<string, string>,
+      suspendedAt: data.suspended_at ?? null,
+    };
+  }
+
   /** Diagnóstico del webhook de ESTA App con sus propias credenciales (JWT de App): qué
    * eventos tiene suscritos, a qué URL apunta y cómo le fue a las últimas entregas.
    * Es la forma de saber, sin entrar a github.com, por qué una App no está mandando
@@ -418,6 +539,7 @@ export class GithubAdapter implements GitProviderPort {
 
   private getAppClient(): Octokit {
     return new Octokit({
+      baseUrl: githubApiBaseUrl(),
       authStrategy: createAppAuth,
       auth: { appId: this.config.appId, privateKey: this.config.privateKey },
     });
@@ -433,6 +555,7 @@ export class GithubAdapter implements GitProviderPort {
    * navegador en absoluto. */
   async listAppInstallations(): Promise<AppInstallationSummary[]> {
     const client = new Octokit({
+      baseUrl: githubApiBaseUrl(),
       authStrategy: createAppAuth,
       auth: { appId: this.config.appId, privateKey: this.config.privateKey },
     });
@@ -451,6 +574,7 @@ export class GithubAdapter implements GitProviderPort {
    * ningún dato de esa instalación más que su id. */
   async getInstallationAccountLogin(installationId: number): Promise<string> {
     const client = new Octokit({
+      baseUrl: githubApiBaseUrl(),
       authStrategy: createAppAuth,
       auth: { appId: this.config.appId, privateKey: this.config.privateKey },
     });
@@ -461,6 +585,7 @@ export class GithubAdapter implements GitProviderPort {
 
   private getInstallationClient(installationId: number): Octokit {
     return new Octokit({
+      baseUrl: githubApiBaseUrl(),
       authStrategy: createAppAuth,
       auth: {
         appId: this.config.appId,
