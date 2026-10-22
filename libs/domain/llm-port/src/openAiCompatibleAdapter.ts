@@ -2,10 +2,15 @@ import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { ZodSchema } from 'zod';
 import {
+  AgenticReviewUnsupportedError,
   issueReplySuggestionResultSchema,
   projectProfileExtractionSchema,
   reconsiderFindingResultSchema,
   reviewResultSchema,
+  type AgentToolbox,
+  type AgenticReviewOptions,
+  type AgenticReviewOutcome,
+  type ToolTraceEntry,
   type ExtractProjectProfileInput,
   type IssueReplySuggestionInput,
   type IssueReplySuggestionResult,
@@ -16,6 +21,7 @@ import {
   type ReviewResult,
 } from './types';
 import {
+  buildAgenticReviewPrompt,
   buildExtractProjectProfilePrompt,
   buildIssueReplySuggestionPrompt,
   buildReconsiderFindingPrompt,
@@ -47,6 +53,135 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
   async reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> {
     const messages = buildSinglePassReviewPrompt(input);
     return this.requestStructured(messages, reviewResultSchema);
+  }
+
+  /** Revisión con investigación: el modelo puede pedir herramientas de solo lectura (leer archivos,
+   * buscar, historial…) en varias rondas antes de emitir el mismo JSON de veredicto de `reviewDiff`.
+   * El bucle está acotado (rondas, consultas, caracteres devueltos, tiempo): si se agota, se le pide
+   * el veredicto con lo reunido hasta ahí. Si el proveedor no acepta herramientas en la primera
+   * ronda, lanza `AgenticReviewUnsupportedError` para que el llamador use el análisis estándar. */
+  async reviewDiffAgentic(
+    input: ReviewDiffInput,
+    toolbox: AgentToolbox,
+    options: AgenticReviewOptions,
+  ): Promise<AgenticReviewOutcome> {
+    const startedAt = Date.now();
+    const messages: ChatCompletionMessageParam[] = buildAgenticReviewPrompt(input);
+    const tools = toolbox.definitions.map((d) => ({
+      type: 'function' as const,
+      function: { name: d.name, description: d.description, parameters: d.parameters },
+    }));
+    const trace: ToolTraceEntry[] = [];
+    const answers = new Map<string, string>();
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let toolCalls = 0;
+    let toolChars = 0;
+    let rounds = 0;
+    let budgetExhausted = false;
+
+    const outcome = (result: ReviewResult): AgenticReviewOutcome => ({
+      result,
+      trace,
+      stats: { rounds, toolCalls, promptTokens, completionTokens, durationMs: Date.now() - startedAt, budgetExhausted },
+    });
+
+    while (true) {
+      const remainingMs = options.deadlineMs - (Date.now() - startedAt);
+      if (rounds >= options.maxRounds || toolCalls >= options.maxToolCalls || toolChars >= options.maxToolChars || remainingMs <= 0) {
+        budgetExhausted = true;
+        break;
+      }
+      rounds += 1;
+
+      let completion;
+      try {
+        completion = await this.client.chat.completions.create(
+          { model: this.model, messages, tools, tool_choice: 'auto', temperature: 0.1 },
+          { timeout: Math.max(5_000, Math.min(remainingMs, 120_000)) },
+        );
+      } catch (err) {
+        const status = (err as { status?: number }).status;
+        if (rounds === 1 && (status === 400 || status === 404 || status === 422)) {
+          throw new AgenticReviewUnsupportedError(
+            `el proveedor rechazó la petición con herramientas (HTTP ${status}): ${(err as Error).message}`,
+          );
+        }
+        console.error(`[llm-port] fallo en la ronda ${rounds} del análisis profundo (modelo "${this.model}"): ${(err as Error).message}`);
+        throw err;
+      }
+      promptTokens += completion.usage?.prompt_tokens ?? 0;
+      completionTokens += completion.usage?.completion_tokens ?? 0;
+
+      const message = completion.choices[0]?.message;
+      if (!message) throw new Error('El proveedor de inferencia devolvió una respuesta vacía');
+      const calls = message.tool_calls ?? [];
+
+      if (calls.length === 0) {
+        // Sin más herramientas: debe ser el veredicto. Si no cumple el esquema, se le pide corregirlo
+        // (sin herramientas) con la misma lógica de reintento de las demás llamadas.
+        const parsed = parseReviewJson(message.content ?? '');
+        if (parsed.ok) return outcome(parsed.value);
+        console.warn(`[llm-port] veredicto del análisis profundo no cumplió el esquema, reintentando: ${parsed.error}`);
+        messages.push({ role: 'assistant', content: message.content ?? '' });
+        messages.push({
+          role: 'user',
+          content: `Tu respuesta no cumplió el esquema esperado (${parsed.error}). Responde de nuevo SOLO con el JSON válido del veredicto, sin texto adicional.`,
+        });
+        return outcome(await this.requestStructured(messages, reviewResultSchema));
+      }
+
+      messages.push({ role: 'assistant', content: message.content ?? null, tool_calls: calls });
+      for (const call of calls) {
+        let args: Record<string, unknown> = {};
+        let parseError: string | null = null;
+        try {
+          const parsedArgs = JSON.parse(call.function.arguments || '{}');
+          if (parsedArgs && typeof parsedArgs === 'object' && !Array.isArray(parsedArgs)) args = parsedArgs;
+          else parseError = 'los argumentos deben ser un objeto JSON';
+        } catch {
+          parseError = 'los argumentos no son JSON válido';
+        }
+
+        const key = `${call.function.name}:${JSON.stringify(args, Object.keys(args).sort())}`;
+        const started = Date.now();
+        let output: string;
+        let summary: string;
+        let ok: boolean;
+        if (parseError) {
+          output = `Error: ${parseError}.`;
+          summary = parseError;
+          ok = false;
+        } else if (toolCalls >= options.maxToolCalls || toolChars >= options.maxToolChars) {
+          output = 'Presupuesto de consultas agotado: no se ejecutó. Emite el veredicto final con lo que ya tienes.';
+          summary = 'omitida: presupuesto agotado';
+          ok = false;
+          budgetExhausted = true;
+        } else if (answers.has(key)) {
+          output = 'Consulta idéntica a una anterior: no se repite para ahorrar presupuesto. Usa el resultado anterior.';
+          summary = 'repetida (omitida)';
+          ok = false;
+        } else {
+          toolCalls += 1;
+          const result = await toolbox.execute(call.function.name, args);
+          output = result.output.slice(0, Math.max(0, options.maxToolChars - toolChars));
+          if (output.length < result.output.length) output += '\n[...recortado por el presupuesto de contexto]';
+          summary = result.summary;
+          ok = result.ok;
+          toolChars += output.length;
+          answers.set(key, output);
+        }
+        trace.push({ round: rounds, tool: call.function.name, args, ok, summary, chars: output.length, ms: Date.now() - started });
+        messages.push({ role: 'tool', tool_call_id: call.id, content: output });
+      }
+    }
+
+    messages.push({
+      role: 'user',
+      content:
+        'Se agotó el presupuesto de investigación. Emite AHORA el veredicto final como el JSON del esquema indicado, con la evidencia que reuniste hasta aquí (indica en la justificación qué no alcanzaste a verificar).',
+    });
+    return outcome(await this.requestStructured(messages, reviewResultSchema));
   }
 
   async reconsiderFinding(input: ReconsiderFindingInput): Promise<ReconsiderFindingResult> {
@@ -121,5 +256,17 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       throw new Error('El proveedor de inferencia devolvió una respuesta vacía');
     }
     return content;
+  }
+}
+
+/** El veredicto final puede venir con ```json ... ``` o con texto alrededor: toma el primer objeto JSON. */
+function parseReviewJson(content: string): { ok: true; value: ReviewResult } | { ok: false; error: string } {
+  const start = content.indexOf('{');
+  const end = content.lastIndexOf('}');
+  if (start < 0 || end <= start) return { ok: false, error: 'no se encontró un objeto JSON' };
+  try {
+    return { ok: true, value: reviewResultSchema.parse(JSON.parse(content.slice(start, end + 1))) };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message.slice(0, 400) };
   }
 }

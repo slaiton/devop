@@ -14,6 +14,7 @@ interface UpdateRepositorySettingsBody {
   notifyAuthorOnPush?: boolean;
   autoMergeOnGreen?: boolean;
   ignoredPushBranches?: string[];
+  analysisDepth?: string;
 }
 
 interface UpdateProjectProfileBody {

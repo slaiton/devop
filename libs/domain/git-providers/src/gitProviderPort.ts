@@ -183,6 +183,32 @@ export interface InstallationDetails {
   suspendedAt: string | null;
 }
 
+export interface PullRequestContextInfo {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  base: string;
+  head: string;
+  author: string | null;
+  labels: string[];
+  comments: { author: string | null; body: string }[];
+}
+
+export type RemoteFileResult =
+  | { kind: 'file'; path: string; content: string; truncated: boolean }
+  | { kind: 'dir'; path: string; entries: string[] };
+
+export interface ReadRemoteFileParams {
+  installationId: number;
+  owner: string;
+  repo: string;
+  path: string;
+  /** Rama, tag o SHA; sin definir = rama por defecto. */
+  ref?: string;
+  maxChars: number;
+}
+
 export interface WebhookDeliverySummary {
   id: number;
   guid: string;
@@ -233,6 +259,8 @@ export interface GitProviderPort {
   listAppInstallations(): Promise<AppInstallationSummary[]>;
   readContextFiles(params: ReadContextFilesParams): Promise<ContextFile[]>;
   collectProjectContext(params: ReadContextFilesParams): Promise<ContextFile[]>;
+  getPullRequestContext(params: CommitRef & { pullNumber?: number }): Promise<PullRequestContextInfo[]>;
+  readRemoteFile(params: ReadRemoteFileParams): Promise<RemoteFileResult | null>;
   getAppOverview(): Promise<AppOverview>;
   getInstallationDetails(installationId: number): Promise<InstallationDetails>;
 }

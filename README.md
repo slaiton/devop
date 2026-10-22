@@ -137,7 +137,34 @@ eventos), repo incluido en la instalación, pushes ya recibidos y contexto del p
 En la pestaña **Perfil del proyecto**, **Generar contexto** lee el README, CLAUDE.md /
 AGENTS.md, los archivos de dependencias y la estructura de carpetas de la rama principal y
 arma el perfil con la IA (si ya lo configuraste a mano, solo completa los campos vacíos).
-`GITHUB_API_URL` (opcional) apunta a otra API compatible, p. ej. GitHub Enterprise Server.
+`GITHUB_API_URL` y `GITHUB_GIT_URL` (opcionales) apuntan la API y los clones a otro servidor
+compatible, p. ej. GitHub Enterprise Server.
+
+### Análisis estándar y profundo
+
+Cada repositorio tiene, en **Configuración**, su **profundidad del análisis**:
+
+- **Estándar** (por defecto): una sola pasada del modelo sobre el diff, el perfil del proyecto,
+  los analizadores estáticos y los últimos commits.
+- **Profundo**: el revisor investiga antes de opinar, con herramientas de **solo lectura** sobre el
+  clon del commit: leer archivos o rangos, buscar usos (`git grep`), listar carpetas, historial y
+  `blame` de un archivo, leer commits previos, búsqueda semántica, y —por la API de GitHub— leer
+  archivos de otros repos de la misma instalación o de otra rama, y el contexto del Pull Request.
+  Antes de empezar recibe, sin gastar tokens, el PR, el historial reciente de cada archivo
+  modificado y dónde más se usan los símbolos que el diff agrega. Cada hallazgo debe citar
+  `archivo:línea` de lo que verificó.
+
+La investigación está acotada por commit (12 rondas, 40 consultas, ~160 000 caracteres devueltos y
+4 minutos); si se agota, el veredicto se da con lo reunido. Si el modelo no acepta herramientas
+(function calling) o la investigación falla, el commit se analiza en modo estándar y la página del
+commit dice por qué: ningún push se queda sin revisar. Esa página muestra además el modo usado,
+rondas, consultas, tokens y la lista de lo que consultó la IA ("Qué revisó la IA antes de opinar").
+
+Las herramientas no pueden leer `.git/` (su configuración puede traer el token), archivos `.env`,
+llaves privadas ni los informes del análisis estático, y rechazan rutas fuera del repo (`..`,
+symlinks). El resultado que devuelven se trata como datos, no como instrucciones. Requiere un
+modelo con function calling compatible con la API de OpenAI (p. ej. `deepseek-chat`, Grok 3/4);
+los modelos de razonamiento puro suelen no aceptarlo y caerán al modo estándar.
 
 ### 7. Entrar con passkey
 

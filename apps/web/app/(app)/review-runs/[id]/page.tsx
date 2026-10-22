@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import parseDiff from 'parse-diff';
 import { GateBadge } from '../../../GateBadge';
+import { AnalysisTrace, type AnalysisStats, type TraceEntry } from './AnalysisTrace';
 import { ReconsiderFindingButton } from './ReconsiderFindingButton';
 
 interface Finding {
@@ -38,6 +39,10 @@ interface ReviewRunDetail {
   recommendations: string[] | null;
   recommended_tests: string[] | null;
   analyzed_files: string[] | null;
+  analysis_mode: 'standard' | 'deep' | null;
+  analysis_note: string | null;
+  analysis_trace: TraceEntry[] | null;
+  analysis_stats: AnalysisStats | null;
   github_pr_number: number | null;
   pull_request_title: string | null;
   findings: Finding[];
@@ -147,6 +152,8 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
         {run.risk_level ? <span className={`badge badge-${run.risk_level}`}>{run.risk_level}</span> : '-'}
       </p>
       {run.summary && <p>{run.summary}</p>}
+
+      <AnalysisTrace mode={run.analysis_mode} note={run.analysis_note} trace={run.analysis_trace} stats={run.analysis_stats} />
 
       {run.analyzed_files && run.analyzed_files.length > 0 && (
         <>

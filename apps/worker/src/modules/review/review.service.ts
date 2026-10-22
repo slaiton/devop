@@ -2,7 +2,17 @@ import { Injectable, Logger } from '@nestjs/common';
 import { getPool, withTenant } from '@devsentinel/database';
 import type { ContextFile, GitProviderPort } from '@devsentinel/git-providers';
 import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
-import { OpenAiCompatibleLlmAdapter, embedLocally, type ProjectProfile, type ReviewResult } from '@devsentinel/llm-port';
+import {
+  AgenticReviewUnsupportedError,
+  OpenAiCompatibleLlmAdapter,
+  embedLocally,
+  type AgenticReviewOptions,
+  type AgenticReviewStats,
+  type ProjectProfile,
+  type ReviewDiffInput,
+  type ReviewResult,
+  type ToolTraceEntry,
+} from '@devsentinel/llm-port';
 import { getSystemSettings, sendEmail } from '@devsentinel/settings';
 import type { ReviewJobPayload } from '@devsentinel/event-contracts';
 import { buildPullRequestContent } from '@devsentinel/pr-content';
@@ -11,11 +21,15 @@ import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
 import { RagContextService } from './ragContext.service';
 import { readLocalContextFiles } from './contextFiles';
+import { truncateDiff } from './diffUtils';
+import { ReviewToolbox, buildFileHistorySummary, buildSymbolUsages, formatPullRequests } from './reviewToolbox';
 
 interface QualityGateConfig {
   min_coverage_pct: number;
   block_on_risk_level: 'medium' | 'high';
   block_on_secret: boolean;
+  /** 'deep' = el revisor investiga el repo con herramientas; ausente/'standard' = una sola pasada. */
+  analysis_depth?: 'standard' | 'deep';
 }
 
 const DEFAULT_GATE_CONFIG: QualityGateConfig = {
@@ -23,6 +37,23 @@ const DEFAULT_GATE_CONFIG: QualityGateConfig = {
   block_on_risk_level: 'high',
   block_on_secret: true,
 };
+
+/** Lo que se guarda de cómo se analizó cada commit (ver migración 0035). */
+interface AnalysisRecord {
+  mode: 'standard' | 'deep';
+  note: string | null;
+  trace: ToolTraceEntry[] | null;
+  stats: AgenticReviewStats | null;
+}
+
+/** Límites de la investigación del modo profundo: acotan tiempo y costo por commit. */
+const DEEP_ANALYSIS_OPTIONS: AgenticReviewOptions = {
+  maxRounds: 12,
+  maxToolCalls: 40,
+  maxToolChars: 160_000,
+  deadlineMs: 240_000,
+};
+const DEEP_MAX_DIFF_CHARS = 100_000;
 
 type GateDecision = 'apto' | 'requiere_revision' | 'no_apto';
 
@@ -103,7 +134,11 @@ export class ReviewService {
       const installationToken = await gitAdapter.getInstallationToken(payload.installationId);
       const existingProfile = await this.getProjectProfile(payload.organizationId, payload.repositoryId);
 
-      const { staticFindings, retrievedContext, localContextFiles } = await this.checkout.withCheckout(
+      const config = await this.getQualityGateConfig(payload.organizationId, payload.repositoryId);
+
+      // La llamada al modelo ocurre DENTRO del checkout: en modo profundo el revisor lee archivos,
+      // busca y consulta el historial sobre ese clon, que se borra al terminar el callback.
+      const { result, analysis } = await this.checkout.withCheckout(
         {
           owner: payload.owner,
           repo: payload.repo,
@@ -111,46 +146,52 @@ export class ReviewService {
           installationToken,
         },
         async (checkoutPath) => {
-          const findings = await this.staticAnalysis.run(checkoutPath);
-          const context = await this.ragContext.indexAndRetrieve(
+          const staticFindings = await this.staticAnalysis.run(checkoutPath);
+          const retrievedContext = await this.ragContext.indexAndRetrieve(
             payload.organizationId,
             payload.repositoryId,
             checkoutPath,
             diff,
           );
           // Solo hace falta leer los archivos de contexto si el repo no tiene perfil todavía.
-          const contextFiles = existingProfile ? [] : await readLocalContextFiles(checkoutPath);
-          return { staticFindings: findings, retrievedContext: context, localContextFiles: contextFiles };
+          const localContextFiles = existingProfile ? [] : await readLocalContextFiles(checkoutPath);
+
+          const [projectProfile, recentCommits] = await Promise.all([
+            existingProfile
+              ? Promise.resolve(existingProfile)
+              : this.bootstrapProjectProfile(gitAdapter, llm, payload, localContextFiles),
+            gitAdapter.getRecentCommits({
+              installationId: payload.installationId,
+              owner: payload.owner,
+              repo: payload.repo,
+              commitSha: payload.commitSha,
+            }),
+          ]);
+
+          const reviewInput: ReviewDiffInput = {
+            repositoryFullName: `${payload.owner}/${payload.repo}`,
+            commitSha: payload.commitSha,
+            diff,
+            staticFindings,
+            retrievedContext,
+            projectProfile,
+            recentCommits,
+            analyzedFiles,
+          };
+          return this.runLlmReview({
+            deep: config.analysis_depth === 'deep',
+            llm,
+            gitAdapter,
+            payload,
+            reviewInput,
+            checkoutPath,
+          });
         },
       );
 
-      const [projectProfile, recentCommits] = await Promise.all([
-        existingProfile
-          ? Promise.resolve(existingProfile)
-          : this.bootstrapProjectProfile(gitAdapter, llm, payload, localContextFiles),
-        gitAdapter.getRecentCommits({
-          installationId: payload.installationId,
-          owner: payload.owner,
-          repo: payload.repo,
-          commitSha: payload.commitSha,
-        }),
-      ]);
-
-      const result = await llm.reviewDiff({
-        repositoryFullName: `${payload.owner}/${payload.repo}`,
-        commitSha: payload.commitSha,
-        diff,
-        staticFindings,
-        retrievedContext,
-        projectProfile,
-        recentCommits,
-        analyzedFiles,
-      });
-
-      const config = await this.getQualityGateConfig(payload.organizationId, payload.repositoryId);
       const gateDecision = this.evaluateGateDecision(config, result);
 
-      await this.persistResult(payload, result, gateDecision, analyzedFiles);
+      await this.persistResult(payload, result, gateDecision, analyzedFiles, analysis);
       await this.publishToGithub(gitAdapter, payload, result, gateDecision);
       await this.syncFindingsIssue(gitAdapter, payload, result, gateDecision);
       await this.maybeAutoCreatePullRequest(gitAdapter, payload, result, gateDecision);
@@ -168,6 +209,111 @@ export class ReviewService {
         await this.recordRetryableError(payload, message);
       }
       throw err;
+    }
+  }
+
+  /** Una sola pasada (estándar) o investigación con herramientas (profundo). El modo profundo NUNCA
+   * frena el análisis: si el modelo no soporta herramientas o la investigación falla, se revisa en
+   * modo estándar y se deja constancia del motivo en la revisión. */
+  private async runLlmReview(params: {
+    deep: boolean;
+    llm: OpenAiCompatibleLlmAdapter;
+    gitAdapter: GitProviderPort;
+    payload: ReviewJobPayload;
+    reviewInput: ReviewDiffInput;
+    checkoutPath: string;
+  }): Promise<{ result: ReviewResult; analysis: AnalysisRecord }> {
+    const { deep, llm, gitAdapter, payload, reviewInput, checkoutPath } = params;
+    if (!deep) {
+      return { result: await llm.reviewDiff(reviewInput), analysis: { mode: 'standard', note: null, trace: null, stats: null } };
+    }
+
+    try {
+      const trimmed = truncateDiff(reviewInput.diff, DEEP_MAX_DIFF_CHARS);
+      const [pullRequest, fileHistory, symbolUsages] = await Promise.all([
+        this.describePullRequest(gitAdapter, payload),
+        buildFileHistorySummary(checkoutPath, reviewInput.analyzedFiles).catch(() => ''),
+        buildSymbolUsages(checkoutPath, reviewInput.diff, reviewInput.analyzedFiles).catch(() => ''),
+        // Hace crecer el índice semántico del repo; es opcional y acotado en tiempo.
+        this.ragContext
+          .indexRepositorySample(payload.organizationId, payload.repositoryId, checkoutPath)
+          .catch((err) => this.logger.warn(`no se pudo ampliar el índice semántico de ${payload.owner}/${payload.repo}: ${(err as Error).message}`)),
+      ]);
+
+      const toolbox = new ReviewToolbox({
+        checkoutPath,
+        git: gitAdapter,
+        installationId: payload.installationId,
+        owner: payload.owner,
+        repo: payload.repo,
+        commitSha: payload.commitSha,
+        pullNumber: payload.pullNumber,
+        semanticSearch: (query) => this.ragContext.search(payload.organizationId, payload.repositoryId, query),
+      });
+
+      const outcome = await llm.reviewDiffAgentic(
+        {
+          ...reviewInput,
+          diff: trimmed.diff,
+          deepContext: {
+            pullRequest: pullRequest || undefined,
+            fileHistory: fileHistory || undefined,
+            symbolUsages: symbolUsages || undefined,
+            truncatedNote: trimmed.note,
+          },
+        },
+        toolbox,
+        DEEP_ANALYSIS_OPTIONS,
+      );
+      this.logger.log(
+        `análisis profundo de ${payload.owner}/${payload.repo}@${payload.commitSha.slice(0, 7)}: ${outcome.stats.rounds} rondas, ${outcome.stats.toolCalls} consultas, ${outcome.stats.promptTokens + outcome.stats.completionTokens} tokens, ${Math.round(outcome.stats.durationMs / 1000)} s${outcome.stats.budgetExhausted ? ' (presupuesto agotado)' : ''}`,
+      );
+      return {
+        result: outcome.result,
+        analysis: {
+          mode: 'deep',
+          note: outcome.stats.budgetExhausted
+            ? 'Se agotó el presupuesto de investigación (rondas, consultas, tamaño o tiempo): el veredicto se dio con lo reunido hasta ese punto.'
+            : null,
+          trace: outcome.trace,
+          stats: outcome.stats,
+        },
+      };
+    } catch (err) {
+      const message = (err as Error).message;
+      const unsupported = err instanceof AgenticReviewUnsupportedError;
+      this.logger.warn(
+        `análisis profundo de ${payload.owner}/${payload.repo}@${payload.commitSha.slice(0, 7)} no disponible (${unsupported ? 'el modelo no soporta herramientas' : 'falló la investigación'}): ${message} — se analiza en modo estándar`,
+      );
+      return {
+        result: await llm.reviewDiff(reviewInput),
+        analysis: {
+          mode: 'standard',
+          note: unsupported
+            ? `Este repo está en análisis profundo, pero el modelo configurado no soporta herramientas: se analizó en modo estándar. Detalle: ${message.slice(0, 300)}`
+            : `La investigación profunda falló y se analizó en modo estándar. Detalle: ${message.slice(0, 300)}`,
+          trace: null,
+          stats: null,
+        },
+      };
+    }
+  }
+
+  /** Título y descripción del Pull Request relacionado (el "porqué" del cambio). Opcional: si GitHub
+   * no lo da (sin PR, o la App no tiene permiso de Pull requests) el análisis sigue sin él. */
+  private async describePullRequest(gitAdapter: GitProviderPort, payload: ReviewJobPayload): Promise<string> {
+    try {
+      const prs = await gitAdapter.getPullRequestContext({
+        installationId: payload.installationId,
+        owner: payload.owner,
+        repo: payload.repo,
+        commitSha: payload.commitSha,
+        pullNumber: payload.pullNumber,
+      });
+      return prs.length ? formatPullRequests(prs).slice(0, 6_000) : '';
+    } catch (err) {
+      this.logger.warn(`no se pudo leer el contexto del Pull Request de ${payload.owner}/${payload.repo}: ${(err as Error).message}`);
+      return '';
     }
   }
 
@@ -301,6 +447,7 @@ export class ReviewService {
     result: ReviewResult,
     gateDecision: GateDecision,
     analyzedFiles: string[],
+    analysis: AnalysisRecord,
   ): Promise<void> {
     await withTenant(payload.organizationId, async (client) => {
       // Idempotente ante reintentos: si un intento anterior llegó a guardar hallazgos
@@ -311,7 +458,8 @@ export class ReviewService {
          SET status = 'completed', quality_score = $1, risk_level = $2, summary = $3,
              gate_decision = $4, llm_verdict = $5, final_justification = $6,
              commit_history_comparison = $7, recommendations = $8, recommended_tests = $9,
-             analyzed_files = $10, completed_at = now()
+             analyzed_files = $10, completed_at = now(),
+             analysis_mode = $12, analysis_note = $13, analysis_trace = $14, analysis_stats = $15
          WHERE id = $11`,
         [
           result.quality_score,
@@ -325,6 +473,10 @@ export class ReviewService {
           result.tests_recomendados,
           analyzedFiles,
           payload.reviewRunId,
+          analysis.mode,
+          analysis.note,
+          analysis.trace ? JSON.stringify(analysis.trace) : null,
+          analysis.stats ? JSON.stringify(analysis.stats) : null,
         ],
       );
 
@@ -744,7 +896,7 @@ export class ReviewService {
   private async getQualityGateConfig(organizationId: string, repositoryId: string): Promise<QualityGateConfig> {
     return withTenant(organizationId, async (client) => {
       const { rows } = await client.query(
-        `SELECT min_coverage_pct, block_on_risk_level, block_on_secret
+        `SELECT min_coverage_pct, block_on_risk_level, block_on_secret, analysis_depth
          FROM quality_gate_configs
          WHERE organization_id = $1 AND (repository_id = $2 OR repository_id IS NULL)
          ORDER BY repository_id NULLS LAST

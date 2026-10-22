@@ -11,6 +11,7 @@ export function RepoSettingsForm({
   notifyAuthorOnPush,
   autoMergeOnGreen,
   ignoredPushBranches,
+  analysisDepth,
 }: {
   repositoryId: string;
   promotionSourceBranch: string;
@@ -19,6 +20,7 @@ export function RepoSettingsForm({
   notifyAuthorOnPush: boolean;
   autoMergeOnGreen: boolean;
   ignoredPushBranches: string[];
+  analysisDepth: 'standard' | 'deep';
 }) {
   const router = useRouter();
   const [sourceBranch, setSourceBranch] = useState(promotionSourceBranch);
@@ -27,6 +29,7 @@ export function RepoSettingsForm({
   const [notifyAuthor, setNotifyAuthor] = useState(notifyAuthorOnPush);
   const [autoMerge, setAutoMerge] = useState(autoMergeOnGreen);
   const [ignoredBranches, setIgnoredBranches] = useState(ignoredPushBranches.join(', '));
+  const [depth, setDepth] = useState<'standard' | 'deep'>(analysisDepth);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -46,6 +49,7 @@ export function RepoSettingsForm({
           autoCreatePrOnPush: autoCreatePr,
           notifyAuthorOnPush: notifyAuthor,
           autoMergeOnGreen: autoMerge,
+          analysisDepth: depth,
           ignoredPushBranches: ignoredBranches
             .split(',')
             .map((b) => b.trim())
@@ -70,6 +74,27 @@ export function RepoSettingsForm({
       <p style={{ color: 'var(--ink-muted)' }}>
         Se analiza cualquier push a cualquier rama del repositorio, excepto las ramas listadas abajo.
       </p>
+      <fieldset className="depth-picker">
+        <legend>Profundidad del análisis</legend>
+        <label className="depth-option">
+          <input type="radio" name="analysis-depth" checked={depth === 'standard'} onChange={() => setDepth('standard')} />
+          <span>
+            <strong>Estándar</strong>
+            <small>Una sola pasada sobre el diff, el perfil del proyecto y los últimos commits. Rápido y barato.</small>
+          </span>
+        </label>
+        <label className="depth-option">
+          <input type="radio" name="analysis-depth" checked={depth === 'deep'} onChange={() => setDepth('deep')} />
+          <span>
+            <strong>Profundo</strong>
+            <small>
+              La IA investiga antes de opinar: lee archivos completos, busca dónde se usa lo que cambió, revisa el historial de cada
+              archivo y el contexto del Pull Request. Tarda más y gasta más tokens; si el modelo no soporta herramientas, se analiza en
+              modo estándar y se avisa.
+            </small>
+          </span>
+        </label>
+      </fieldset>
       <p>
         <label>
           Ramas a omitir (separadas por coma):

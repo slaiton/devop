@@ -9,6 +9,7 @@ interface RepoSettings {
   notify_author_on_push: boolean;
   auto_merge_on_green: boolean;
   ignored_push_branches: string[];
+  analysis_depth: 'standard' | 'deep';
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -45,6 +46,7 @@ export default async function RepositorySettingsTab({ params }: { params: Promis
       notifyAuthorOnPush={settings.notify_author_on_push}
       autoMergeOnGreen={settings.auto_merge_on_green}
       ignoredPushBranches={settings.ignored_push_branches}
+      analysisDepth={settings.analysis_depth}
     />
   );
 }

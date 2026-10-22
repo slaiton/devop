@@ -127,6 +127,8 @@ export interface ReviewDiffInput {
   projectProfile?: ProjectProfile;
   recentCommits?: RecentCommit[];
   analyzedFiles: string[];
+  /** Solo análisis profundo. */
+  deepContext?: DeepReviewContext;
 }
 
 export const reconsiderFindingResultSchema = z.object({
@@ -167,4 +169,85 @@ export interface IssueReplySuggestionInput {
   issueBody: string;
   comments: IssueReplyComment[];
   blockingFindings: Finding[];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Análisis profundo: el revisor puede llamar herramientas de solo lectura sobre el repo.
+// ---------------------------------------------------------------------------------------------
+
+/** Contexto que el worker arma sin gastar tokens antes de la investigación (solo modo profundo). */
+export interface DeepReviewContext {
+  /** Título/descripción/comentarios del Pull Request relacionado, si lo hay. */
+  pullRequest?: string;
+  /** Últimos commits de cada archivo modificado (por qué está como está). */
+  fileHistory?: string;
+  /** Dónde más se usan los símbolos (funciones, clases…) que el diff agrega o modifica. */
+  symbolUsages?: string;
+  /** Aviso si el diff se recortó para caber en el prompt. */
+  truncatedNote?: string;
+}
+
+export interface AgentToolDefinition {
+  name: string;
+  description: string;
+  /** JSON Schema del objeto de argumentos. */
+  parameters: Record<string, unknown>;
+}
+
+export interface AgentToolResult {
+  /** Texto que se le devuelve al modelo (ya acotado en tamaño). */
+  output: string;
+  /** Línea corta para la traza que ve el usuario ("12 coincidencias en 4 archivos"). */
+  summary: string;
+  ok: boolean;
+}
+
+export interface AgentToolbox {
+  definitions: AgentToolDefinition[];
+  /** Ejecuta una herramienta. Nunca debe lanzar: los errores se devuelven como `ok: false`. */
+  execute(name: string, args: Record<string, unknown>): Promise<AgentToolResult>;
+}
+
+export interface AgenticReviewOptions {
+  maxRounds: number;
+  maxToolCalls: number;
+  /** Tope de caracteres que las herramientas pueden devolver en total durante la revisión. */
+  maxToolChars: number;
+  /** Tiempo máximo de toda la investigación; al agotarse se pide el veredicto con lo reunido. */
+  deadlineMs: number;
+}
+
+export interface ToolTraceEntry {
+  round: number;
+  tool: string;
+  args: Record<string, unknown>;
+  ok: boolean;
+  summary: string;
+  chars: number;
+  ms: number;
+}
+
+export interface AgenticReviewStats {
+  rounds: number;
+  toolCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  durationMs: number;
+  /** true si se cortó la investigación por presupuesto (rondas, consultas, tamaño o tiempo). */
+  budgetExhausted: boolean;
+}
+
+export interface AgenticReviewOutcome {
+  result: ReviewResult;
+  trace: ToolTraceEntry[];
+  stats: AgenticReviewStats;
+}
+
+/** El proveedor/modelo configurado no acepta herramientas (function calling): el llamador debe
+ * caer al análisis estándar en vez de fallar la revisión. */
+export class AgenticReviewUnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AgenticReviewUnsupportedError';
+  }
 }

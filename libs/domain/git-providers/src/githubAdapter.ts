@@ -5,6 +5,9 @@ import type {
   AppInstallationSummary,
   AppOverview,
   InstallationDetails,
+  PullRequestContextInfo,
+  ReadRemoteFileParams,
+  RemoteFileResult,
   CheckRunParams,
   CommitRef,
   ContextFile,
@@ -409,6 +412,67 @@ export class GithubAdapter implements GitProviderPort {
     }
     files.push({ path: '(estructura de carpetas)', content: lines.join('\n') });
     return files;
+  }
+
+  /** Pull Request(s) relacionados con un commit (o el PR indicado): título, descripción, etiquetas y los
+   * primeros comentarios. Es el "porqué" del cambio, que no existe en git. Acotado en tamaño. */
+  async getPullRequestContext(params: CommitRef & { pullNumber?: number }): Promise<PullRequestContextInfo[]> {
+    const client = this.getInstallationClient(params.installationId);
+    const base = { owner: params.owner, repo: params.repo };
+    let pulls: { number: number; title: string; body: string | null; state: string; base: { ref: string }; head: { ref: string }; user: { login: string } | null; labels: ({ name?: string } | string)[] }[];
+    if (params.pullNumber) {
+      const { data } = await client.pulls.get({ ...base, pull_number: params.pullNumber });
+      pulls = [data];
+    } else {
+      const { data } = await client.repos.listPullRequestsAssociatedWithCommit({ ...base, commit_sha: params.commitSha });
+      pulls = data.slice(0, 2);
+    }
+    const result: PullRequestContextInfo[] = [];
+    for (const pr of pulls) {
+      let comments: { author: string | null; body: string }[] = [];
+      try {
+        const { data } = await client.issues.listComments({ ...base, issue_number: pr.number, per_page: 10 });
+        comments = data.map((c) => ({ author: c.user?.login ?? null, body: (c.body ?? '').slice(0, 800) }));
+      } catch {
+        // los comentarios son contexto accesorio: sin ellos igual sirve el resto
+      }
+      result.push({
+        number: pr.number,
+        title: pr.title,
+        body: (pr.body ?? '').slice(0, 4000),
+        state: pr.state,
+        base: pr.base.ref,
+        head: pr.head.ref,
+        author: pr.user?.login ?? null,
+        labels: pr.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))).filter(Boolean),
+        comments,
+      });
+    }
+    return result;
+  }
+
+  /** Lee un archivo (o lista una carpeta) de cualquier repo que la instalación pueda ver, en la rama
+   * por defecto o en `ref`. `null` si no existe o la instalación no tiene acceso a ese repo. */
+  async readRemoteFile(params: ReadRemoteFileParams): Promise<RemoteFileResult | null> {
+    const client = this.getInstallationClient(params.installationId);
+    try {
+      const { data } = await client.repos.getContent({
+        owner: params.owner,
+        repo: params.repo,
+        path: params.path.replace(/^\/+/, ''),
+        ...(params.ref ? { ref: params.ref } : {}),
+      });
+      if (Array.isArray(data)) {
+        return { kind: 'dir', path: params.path, entries: data.map((e) => `${e.type === 'dir' ? '[dir] ' : ''}${e.name}`) };
+      }
+      if (data.type !== 'file' || !('content' in data) || !data.content) return null;
+      const full = Buffer.from(data.content, 'base64').toString('utf8');
+      return { kind: 'file', path: data.path, content: full.slice(0, params.maxChars), truncated: full.length > params.maxChars };
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status === 404 || status === 403) return null;
+      throw err;
+    }
   }
 
   /** Configuración de la App en GitHub (JWT de App): eventos suscritos, permisos que declara y

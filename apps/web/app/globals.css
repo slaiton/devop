@@ -1396,3 +1396,111 @@ tbody tr:hover {
   font-size: 0.85rem;
   font-weight: 500;
 }
+
+/* ---- Profundidad del análisis / traza del revisor ---- */
+
+.depth-picker {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: 0.6rem;
+}
+.depth-picker legend {
+  padding: 0 0.4rem;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.depth-option {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.6rem;
+  cursor: pointer;
+}
+.depth-option input[type='radio'] {
+  appearance: auto;
+  width: 1rem;
+  height: 1rem;
+  min-width: 0;
+  flex-shrink: 0;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.depth-option span {
+  display: grid;
+  gap: 0.15rem;
+}
+.depth-option small {
+  color: var(--ink-muted);
+  line-height: 1.45;
+}
+
+.trace-card {
+  margin: 0.75rem 0 1rem;
+  padding: 0.7rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.trace-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+}
+.trace-mode {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: var(--border);
+  color: var(--ink-muted);
+}
+.trace-mode-deep {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.trace-stats {
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+.trace-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.trace-card details {
+  margin-top: 0.6rem;
+}
+.trace-card summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+.trace-list {
+  margin: 0.6rem 0 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.84rem;
+}
+.trace-list li {
+  overflow-wrap: anywhere;
+}
+.trace-round {
+  margin-right: 0.5rem;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.trace-result {
+  display: block;
+  color: var(--ink-muted);
+}
+.trace-failed .trace-result {
+  color: var(--warning);
+}
