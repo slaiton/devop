@@ -34,11 +34,11 @@ export function isDeniedPath(relPath: string): boolean {
   return false;
 }
 
-function cap(text: string, max = MAX_CALL_CHARS): string {
+export function cap(text: string, max = MAX_CALL_CHARS): string {
   return text.length > max ? `${text.slice(0, max)}\n[...recortado: ${text.length - max} caracteres más]` : text;
 }
 
-function str(args: Record<string, unknown>, key: string): string | undefined {
+export function str(args: Record<string, unknown>, key: string): string | undefined {
   const v = args[key];
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
@@ -48,11 +48,11 @@ function int(args: Record<string, unknown>, key: string): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : undefined;
 }
 
-const fail = (message: string): AgentToolResult => ({ output: `Error: ${message}`, summary: message, ok: false });
-const done = (output: string, summary: string): AgentToolResult => ({ output, summary, ok: true });
+export const fail = (message: string): AgentToolResult => ({ output: `Error: ${message}`, summary: message, ok: false });
+export const done = (output: string, summary: string): AgentToolResult => ({ output, summary, ok: true });
 
 /** Normaliza una ruta relativa que pide el modelo; rechaza absolutas, `..`, magia de pathspec y secretos. */
-function cleanRelPath(raw: string | undefined, { allowEmpty = false } = {}): string {
+export function cleanRelPath(raw: string | undefined, { allowEmpty = false } = {}): string {
   if (raw === undefined || raw.trim() === '' || raw.trim() === '.' || raw.trim() === './') {
     if (allowEmpty) return '';
     throw new Error('falta la ruta');

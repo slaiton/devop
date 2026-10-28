@@ -15,6 +15,8 @@ interface MyProfile {
   apto_count: string | number;
   no_apto_count: string | number;
   avg_quality_score: number | null;
+  notification_sound: string | null;
+  notification_muted: boolean;
 }
 
 interface MyReviewRow {
@@ -54,10 +56,12 @@ export default async function MyProfilePage() {
     );
   }
 
-  const [profile, reviews] = await Promise.all([
+  const [profile, reviews, catalog] = await Promise.all([
     fetchJson<MyProfile>('/dashboard/me/profile'),
     fetchJson<MyReviewRow[]>('/dashboard/me/reviews'),
+    fetchJson<{ default: string; sounds: { id: string; label: string }[] }>('/notifications/sounds'),
   ]);
+  const myTone = catalog.sounds.find((s) => s.id === (profile.notification_sound ?? catalog.default))?.label;
 
   return (
     <>
@@ -72,6 +76,11 @@ export default async function MyProfilePage() {
           <span className="chip">APTO: {profile.apto_count}</span>
           <span className="chip">NO APTO: {profile.no_apto_count}</span>
           <span className="chip">Score promedio: {profile.avg_quality_score ?? '-'}</span>
+          {profile.developer_id && (
+            <span className="chip" title="Lo define un admin. Suena cuando termina el análisis de uno de tus commits.">
+              Tu aviso sonoro: {profile.notification_muted ? 'silenciado' : myTone}
+            </span>
+          )}
         </p>
       </div>
 

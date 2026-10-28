@@ -10,9 +10,14 @@ export interface SessionPayload {
   sub: string;
   orgId: string;
   role?: string;
-  /** Momento (epoch s) en que se emitió = último momento de autenticación real, porque el
-   * token solo se emite en login, reautenticación o cambio de contraseña. */
+  /** Momento (epoch s) en que se emitió este token (login, reautenticación, cambio de contraseña o renovación). */
   iat?: number;
+  /** Último momento (epoch s) de autenticación REAL: login, passkey, reautenticación o cambio de contraseña.
+   * Una renovación de sesión lo conserva, así que renovar no cuenta como "autenticarse hace poco".
+   * Tokens anteriores a este campo usan `iat` (en ellos coincidían). */
+  at?: number;
+  /** Expiración (epoch s). */
+  exp?: number;
   /** Cómo se autenticó: contraseña o passkey. */
   amr?: 'pwd' | 'webauthn';
   /** Versión de sesión del usuario al emitirse; si subió (cambio de contraseña, passkeys

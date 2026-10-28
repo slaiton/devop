@@ -1,32 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { PoolClient } from 'pg';
-import { getPool, withTenant } from '@devsentinel/database';
+import { withTenant } from '@devsentinel/database';
 import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
-import { OpenAiCompatibleLlmAdapter, embedLocally } from '@devsentinel/llm-port';
-import { getSystemSettings } from '@devsentinel/settings';
 import type { ReconsiderJobPayload } from '@devsentinel/event-contracts';
 import { upsertFindingsIssue } from '@devsentinel/issue-content';
-
-interface QualityGateConfig {
-  block_on_risk_level: 'medium' | 'high';
-  block_on_secret: boolean;
-}
-
-const DEFAULT_GATE_CONFIG: QualityGateConfig = { block_on_risk_level: 'high', block_on_secret: true };
-const HARD_BLOCK_CATEGORIES = new Set(['security', 'architecture', 'database', 'regression']);
+import { createLlmRouter } from '../../common/llmRouter.factory';
+import { checkConclusion, loadGateConfig, recomputeGateDecision } from '../../common/gate';
 
 @Injectable()
 export class ReconsiderService {
   private readonly logger = new Logger(ReconsiderService.name);
 
   async process(payload: ReconsiderJobPayload): Promise<void> {
-    const settings = await getSystemSettings(getPool());
-    const llm = new OpenAiCompatibleLlmAdapter(
-      settings?.llmModel ?? '',
-      settings?.llmProviderBaseUrl ?? '',
-      settings?.llmProviderApiKey ?? '',
-      embedLocally,
-    );
+    const llm = await createLlmRouter();
 
     await withTenant(payload.organizationId, async (client) => {
       const { rows: findingRows } = await client.query('SELECT * FROM findings WHERE id = $1', [payload.findingId]);
@@ -89,8 +74,8 @@ export class ReconsiderService {
         [result.status, result.justification, payload.comment, payload.requestedBy, payload.findingId],
       );
 
-      const config = await this.getQualityGateConfig(client, payload.organizationId, payload.repositoryId);
-      const newGateDecision = await this.recomputeGateDecision(
+      const config = await loadGateConfig(client, payload.organizationId, payload.repositoryId);
+      const newGateDecision = await recomputeGateDecision(
         client,
         payload.reviewRunId,
         result.updated_risk_level,
@@ -104,7 +89,7 @@ export class ReconsiderService {
       );
 
       if (newGateDecision !== run.gate_decision) {
-        const conclusion = newGateDecision === 'apto' ? 'success' : newGateDecision === 'requiere_revision' ? 'neutral' : 'failure';
+        const conclusion = checkConclusion(newGateDecision);
         const title =
           newGateDecision === 'apto'
             ? 'Aprobado por DevSentinel AI (reconsiderado)'
@@ -154,47 +139,5 @@ export class ReconsiderService {
         );
       }
     });
-  }
-
-  private async getQualityGateConfig(client: PoolClient, organizationId: string, repositoryId: string): Promise<QualityGateConfig> {
-    const { rows } = await client.query(
-      `SELECT block_on_risk_level, block_on_secret
-       FROM quality_gate_configs
-       WHERE organization_id = $1 AND (repository_id = $2 OR repository_id IS NULL)
-       ORDER BY repository_id NULLS LAST
-       LIMIT 1`,
-      [organizationId, repositoryId],
-    );
-    return rows[0] ?? DEFAULT_GATE_CONFIG;
-  }
-
-  private async recomputeGateDecision(
-    client: PoolClient,
-    reviewRunId: string,
-    riskLevel: 'low' | 'medium' | 'high',
-    qualityScore: number,
-    config: QualityGateConfig,
-  ): Promise<'apto' | 'requiere_revision' | 'no_apto'> {
-    const { rows: openFindings } = await client.query(
-      `SELECT category, severity, title FROM findings WHERE review_run_id = $1 AND status = 'open'`,
-      [reviewRunId],
-    );
-
-    const hasHardBlockingFinding = openFindings.some(
-      (f: any) => f.severity === 'critical' && HARD_BLOCK_CATEGORIES.has(f.category),
-    );
-    if (hasHardBlockingFinding) return 'no_apto';
-
-    const hasSecretFinding = openFindings.some(
-      (f: any) => f.category === 'security' && /secret|credential|token/i.test(f.title),
-    );
-    if (config.block_on_secret && hasSecretFinding) return 'no_apto';
-
-    const blockingRiskLevels = config.block_on_risk_level === 'medium' ? ['medium', 'high'] : ['high'];
-    if (blockingRiskLevels.includes(riskLevel)) return 'no_apto';
-
-    if (riskLevel === 'high') return 'requiere_revision';
-    if (riskLevel === 'medium' && qualityScore < 70) return 'requiere_revision';
-    return 'apto';
   }
 }

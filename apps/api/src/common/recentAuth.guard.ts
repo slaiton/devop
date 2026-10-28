@@ -11,7 +11,8 @@ export const RECENT_AUTH_WINDOW_SECONDS = 5 * 60;
 export class RecentAuthGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const session = context.switchToHttp().getRequest<RequestWithSession>().session;
-    const ageSeconds = Math.floor(Date.now() / 1000) - (session?.iat ?? 0);
+    // `at` = última autenticación real (una renovación de sesión no lo toca); sin él, `iat`.
+    const ageSeconds = Math.floor(Date.now() / 1000) - (session?.at ?? session?.iat ?? 0);
     if (ageSeconds > RECENT_AUTH_WINDOW_SECONDS) {
       throw new ForbiddenException({ code: 'REAUTH_REQUIRED', message: 'confirma tu identidad para continuar' });
     }

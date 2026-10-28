@@ -1,9 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { getPool, withTenant } from '@devsentinel/database';
+import { withTenant } from '@devsentinel/database';
 import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
-import { OpenAiCompatibleLlmAdapter, embedLocally, type ProjectProfileExtraction } from '@devsentinel/llm-port';
-import { getSystemSettings } from '@devsentinel/settings';
+import type { ProjectProfileExtraction } from '@devsentinel/llm-port';
 import type { ProjectContextJobPayload } from '@devsentinel/event-contracts';
+import { createLlmRouter } from '../../common/llmRouter.factory';
 
 const SCALAR_FIELDS = [
   'language',
@@ -67,16 +67,7 @@ export class ProjectContextService {
       const installationId = Number(repo.installation_id);
       const [owner, name] = repo.full_name.split('/');
 
-      const settings = await getSystemSettings(getPool());
-      if (!settings?.llmModel || !settings.llmProviderBaseUrl) {
-        throw new Error('el proveedor de LLM no está configurado: complétalo en Configuración y vuelve a intentar');
-      }
-      const llm = new OpenAiCompatibleLlmAdapter(
-        settings.llmModel,
-        settings.llmProviderBaseUrl,
-        settings.llmProviderApiKey ?? '',
-        embedLocally,
-      );
+      const llm = await createLlmRouter();
 
       const gitAdapter = await withTenant(organizationId, (client) =>
         buildGithubAdapterForInstallation(client, installationId),

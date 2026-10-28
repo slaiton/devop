@@ -11,6 +11,9 @@ export interface Session {
   emailVerified: boolean;
   mustChangePassword: boolean;
   passkeyCount: number;
+  /** Cuándo expira la sesión (ms epoch) y cuánto dura un token sin renovarse. */
+  sessionExpiresAt: number | null;
+  sessionTtlMs: number | null;
 }
 
 export async function getSession(): Promise<Session | null> {

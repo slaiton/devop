@@ -4,8 +4,9 @@ import { getSystemSettings, updateSystemSettings, type SystemSettings } from '@d
 
 export type SystemSettingsUpdateInput = Partial<SystemSettings>;
 
-/** Configuración global de LLM/SMTP — ya no incluye GitHub App (ver `github_apps`,
- * gestionada por org desde `/accounts`) ni el gate de "sistema configurado" (ver
+/** Configuración global de SMTP. Los agentes de IA (proveedores de LLM, su orden y modo) viven en
+ * `LlmProvidersService`; tampoco incluye GitHub App (ver `github_apps`, gestionada por org desde
+ * `/accounts`) ni el gate de "sistema configurado" (ver
  * `UsersService.hasAnyOrganization`, expuesto en `GET /users/bootstrap-status`). */
 @Injectable()
 export class SystemSettingsService {
@@ -21,9 +22,6 @@ export class SystemSettingsService {
 
   private toMaskedView(settings: SystemSettings | null) {
     return {
-      llmProviderBaseUrl: settings?.llmProviderBaseUrl ?? null,
-      llmModel: settings?.llmModel ?? null,
-      llmProviderApiKeySet: Boolean(settings?.llmProviderApiKey),
       smtpHost: settings?.smtpHost ?? null,
       smtpPort: settings?.smtpPort ?? null,
       smtpUser: settings?.smtpUser ?? null,

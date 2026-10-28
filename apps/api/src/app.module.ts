@@ -12,6 +12,7 @@ import { UsersModule } from './modules/users/users.module';
 import { SystemSettingsModule } from './modules/system-settings/system-settings.module';
 import { GithubAppsModule } from './modules/github-apps/github-apps.module';
 import { HealthModule } from './modules/health/health.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { HealthModule } from './modules/health/health.module';
     SystemSettingsModule,
     GithubAppsModule,
     HealthModule,
+    NotificationsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

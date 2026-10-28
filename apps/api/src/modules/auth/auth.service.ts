@@ -3,7 +3,8 @@ import { compare, hash } from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { sign } from 'jsonwebtoken';
 import { getPool, withTenant } from '@devsentinel/database';
-import type { ClientInfo } from '../../common/session';
+import { SESSION_ABSOLUTE_MAX_SECONDS, SESSION_TTL_SECONDS, type ClientInfo } from '../../common/session';
+import type { SessionPayload } from '../../common/jwtAuth.guard';
 import { SecurityEventsService } from './securityEvents.service';
 
 const BCRYPT_ROUNDS = 12;
@@ -21,6 +22,8 @@ export interface SessionTokenOptions {
   amr: 'pwd' | 'webauthn';
   sessionVersion: number;
   mustChangePassword?: boolean;
+  /** Solo al renovar: se conserva el momento de la autenticación real (epoch s). Sin definir = ahora. */
+  authTime?: number;
 }
 
 @Injectable()
@@ -147,9 +150,9 @@ export class AuthService {
     });
   }
 
-  /** Sesión corta a propósito: al expirar, `JwtAuthGuard` rechaza el token (401) y el
-   * front trata eso como "no logueado" — la única forma de recuperar sesión es volver
-   * a autenticarse (passkey o contraseña), sin refresh silencioso. */
+  /** Sesión de 12 h sin actividad (SESSION_TTL_HOURS), renovable mientras se usa la app (ver `renewSessionToken`).
+   * Al expirar, `JwtAuthGuard` rechaza el token (401) y el front lo trata como "no logueado". `at` guarda cuándo
+   * se autenticó la persona de verdad: lo usa RecentAuthGuard y el tope absoluto de la sesión. */
   issueSessionToken(userId: string, organizationId: string, options: SessionTokenOptions): string {
     return sign(
       {
@@ -157,10 +160,26 @@ export class AuthService {
         orgId: organizationId,
         amr: options.amr,
         sv: options.sessionVersion,
+        at: options.authTime ?? Math.floor(Date.now() / 1000),
         ...(options.mustChangePassword ? { mcp: true } : {}),
       },
       process.env.JWT_SECRET ?? '',
-      { expiresIn: '4h' },
+      { expiresIn: SESSION_TTL_SECONDS },
     );
+  }
+
+  /** Token nuevo con la misma identidad y la MISMA hora de autenticación real (`at`), pero otra vigencia.
+   * Lanza si pasó el tope absoluto desde la última autenticación real: ahí hay que volver a entrar. */
+  renewSessionToken(session: SessionPayload): string {
+    const authTime = session.at ?? session.iat ?? 0;
+    if (Math.floor(Date.now() / 1000) - authTime > SESSION_ABSOLUTE_MAX_SECONDS) {
+      throw new UnauthorizedException('la sesión llegó a su duración máxima: vuelve a iniciar sesión');
+    }
+    return this.issueSessionToken(session.sub, session.orgId, {
+      amr: session.amr ?? 'pwd',
+      sessionVersion: session.sv ?? 0,
+      mustChangePassword: session.mcp,
+      authTime,
+    });
   }
 }

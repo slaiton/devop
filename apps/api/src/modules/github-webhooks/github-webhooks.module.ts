@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
-import { REVIEW_QUEUE_NAME } from '@devsentinel/event-contracts';
+import { CLARIFICATION_QUEUE_NAME, REVIEW_QUEUE_NAME } from '@devsentinel/event-contracts';
 import { RolesGuard } from '../../common/roles.guard';
 import { AuthModule } from '../auth/auth.module';
 import { GithubWebhooksController } from './github-webhooks.controller';
@@ -10,7 +10,7 @@ import { WebhookLogController } from './webhookLog.controller';
 import { WebhookLogService } from './webhookLog.service';
 
 @Module({
-  imports: [BullModule.registerQueue({ name: REVIEW_QUEUE_NAME }), AuthModule],
+  imports: [BullModule.registerQueue({ name: REVIEW_QUEUE_NAME }, { name: CLARIFICATION_QUEUE_NAME }), AuthModule],
   controllers: [GithubWebhooksController, WebhookLogController],
   providers: [GithubWebhooksService, IssuesSyncService, WebhookLogService, RolesGuard],
 })

@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { decode } from 'jsonwebtoken';
 import type { Request, Response } from 'express';
 import { getPool } from '@devsentinel/database';
 import { AuthService } from './auth.service';
@@ -7,7 +8,8 @@ import { JwtAuthGuard } from '../../common/jwtAuth.guard';
 import { CurrentOrg } from '../../common/currentOrg.decorator';
 import { CurrentUser } from '../../common/currentUser.decorator';
 import { AllowPendingPasswordChange } from '../../common/allowPendingPasswordChange.decorator';
-import { SESSION_COOKIE, clientInfo, setSessionCookie } from '../../common/session';
+import { SESSION_COOKIE, SESSION_MAX_AGE_MS, clientInfo, setSessionCookie } from '../../common/session';
+import type { RequestWithSession } from '../../common/jwtAuth.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -78,10 +80,24 @@ export class AuthController {
     res.json({ ok: true });
   }
 
+  /** Renueva la sesión mientras la persona usa la app (la llama el front cada ~30 min de actividad). Conserva la hora de
+   * la autenticación real, así que NO sirve para saltarse la reautenticación de las acciones sensibles, y deja de
+   * funcionar pasado el tope absoluto (SESSION_ABSOLUTE_MAX_DAYS) o si la sesión fue revocada (JwtAuthGuard). */
+  @Post('refresh')
+  @UseGuards(JwtAuthGuard)
+  @AllowPendingPasswordChange()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  refresh(@Req() req: RequestWithSession, @Res() res: Response): void {
+    const token = this.authService.renewSessionToken(req.session!);
+    setSessionCookie(res, token);
+    const { exp } = decode(token) as { exp: number };
+    res.json({ ok: true, expiresAt: exp * 1000 });
+  }
+
   @Get('me')
   @UseGuards(JwtAuthGuard)
   @AllowPendingPasswordChange()
-  async me(@CurrentOrg() orgId: string, @CurrentUser() userId: string) {
+  async me(@CurrentOrg() orgId: string, @CurrentUser() userId: string, @Req() req: RequestWithSession) {
     const role = await this.authService.getMembershipRole(orgId, userId);
     const [{ rows: userRows }, { rows: orgRows }] = await Promise.all([
       getPool().query(
@@ -104,6 +120,9 @@ export class AuthController {
       emailVerified: Boolean(user?.email_verified_at),
       mustChangePassword: Boolean(user?.must_change_password),
       passkeyCount: user?.passkey_count ?? 0,
+      // Cuándo expira la sesión actual (ms epoch): el front la renueva sola mientras haya actividad.
+      sessionExpiresAt: req.session?.exp ? req.session.exp * 1000 : null,
+      sessionTtlMs: SESSION_MAX_AGE_MS,
     };
   }
 }

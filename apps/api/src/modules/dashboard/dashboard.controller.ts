@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
 import { RolesGuard } from '../../common/roles.guard';
 import { Roles } from '../../common/roles.decorator';
@@ -100,6 +100,28 @@ export class DashboardController {
     return this.dashboardService.getRepositorySettings(orgId, repositoryId);
   }
 
+  @Post('findings/:findingId/clarifications')
+  answerClarification(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @CurrentRole() role: string,
+    @Param('findingId', ParseUUIDPipe) findingId: string,
+    @Body() body: { body?: string },
+  ) {
+    return this.dashboardService.answerClarification(orgId, findingId, { userId, role }, body?.body);
+  }
+
+  @Post('findings/:findingId/clarification-decision')
+  @Roles('admin')
+  decideClarification(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @Param('findingId', ParseUUIDPipe) findingId: string,
+    @Body() body: { decision?: string; comment?: string },
+  ) {
+    return this.dashboardService.decideClarification(orgId, findingId, userId, body?.decision, body?.comment);
+  }
+
   @Get('repositories/:repositoryId/project-profile')
   async getProjectProfile(
     @CurrentOrg() orgId: string,
@@ -190,6 +212,16 @@ export class DashboardController {
   @Roles('admin')
   listDevelopers(@CurrentOrg() orgId: string) {
     return this.dashboardService.listDevelopers(orgId);
+  }
+
+  @Patch('developers/:developerId')
+  @Roles('admin')
+  updateDeveloper(
+    @CurrentOrg() orgId: string,
+    @Param('developerId', ParseUUIDPipe) developerId: string,
+    @Body() body: { sound?: string | null; volume?: number; muted?: boolean },
+  ) {
+    return this.dashboardService.updateDeveloperNotification(orgId, developerId, body ?? {});
   }
 
   @Get('overview')

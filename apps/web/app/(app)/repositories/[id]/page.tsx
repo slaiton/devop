@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { NotifyButton } from './NotifyButton';
-import { CreatePullRequestButton } from './PullRequestActions';
+import { PullRequestQuickActions } from './PullRequestActions';
 import { MarkReviewedButton } from './MarkReviewedButton';
 import { CreateIssueButton } from './CreateIssueButton';
 import { GateBadge } from '../../../GateBadge';
@@ -16,6 +16,11 @@ interface PushRow {
   risk_level: 'low' | 'medium' | 'high' | null;
   gate_decision: 'apto' | 'requiere_revision' | 'no_apto' | null;
   blocking_count: number;
+  questions_count: number;
+  pull_request_id: string | null;
+  pr_number: number | null;
+  pr_status: string | null;
+  pr_url: string | null;
   author_name: string | null;
   author_email: string | null;
   notified_at: string | null;
@@ -88,6 +93,11 @@ export default async function RepositoryPushesTab({
                   <>
                     <GateBadge decision={run.gate_decision} />
                     {run.gate_decision === 'no_apto' && ` — ${run.blocking_count} hallazgo(s) bloqueante(s)`}
+                    {run.questions_count > 0 && (
+                      <Link href={`/review-runs/${run.id}`} className="status-warn" style={{ marginLeft: '0.5rem' }}>
+                        ❓ {run.questions_count} pregunta{run.questions_count === 1 ? '' : 's'} de la IA sin responder
+                      </Link>
+                    )}
                   </>
                 )}
                 {' — '}
@@ -95,6 +105,18 @@ export default async function RepositoryPushesTab({
                 {run.risk_level ? <span className={`badge badge-${run.risk_level}`}>{run.risk_level}</span> : '-'}
               </p>
               {run.notified_at && <p>✉️ Notificado el {new Date(run.notified_at).toLocaleString()}</p>}
+              {isAdmin && (isEligibleForPullRequest(run) || run.pull_request_id) && (
+                <PullRequestQuickActions
+                  repositoryId={id}
+                  reviewRunId={run.id}
+                  canCreate={isEligibleForPullRequest(run) && !run.reviewed_at}
+                  initialPullRequest={
+                    run.pull_request_id && run.pr_number !== null
+                      ? { id: run.pull_request_id, number: run.pr_number, status: run.pr_status ?? 'open', url: run.pr_url }
+                      : null
+                  }
+                />
+              )}
               {run.reviewed_at ? (
                 <p className="status-ok">✓ Revisado el {new Date(run.reviewed_at).toLocaleString()}</p>
               ) : (
@@ -103,7 +125,6 @@ export default async function RepositoryPushesTab({
                     {run.author_email && !run.notified_at && (
                       <NotifyButton repositoryId={id} reviewRunId={run.id} authorEmail={run.author_email} />
                     )}
-                    {isEligibleForPullRequest(run) && <CreatePullRequestButton repositoryId={id} reviewRunId={run.id} />}
                     <MarkReviewedButton repositoryId={id} reviewRunId={run.id} />
                     {run.gate_decision === 'no_apto' && <CreateIssueButton repositoryId={id} reviewRunId={run.id} />}
                   </div>

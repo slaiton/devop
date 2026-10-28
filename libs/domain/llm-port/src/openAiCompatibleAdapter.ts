@@ -3,6 +3,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { ZodSchema } from 'zod';
 import {
   AgenticReviewUnsupportedError,
+  clarificationResultSchema,
   issueReplySuggestionResultSchema,
   projectProfileExtractionSchema,
   reconsiderFindingResultSchema,
@@ -10,6 +11,9 @@ import {
   type AgentToolbox,
   type AgenticReviewOptions,
   type AgenticReviewOutcome,
+  type AgenticReviewStats,
+  type ClarificationResult,
+  type ResolveClarificationInput,
   type ToolTraceEntry,
   type ExtractProjectProfileInput,
   type IssueReplySuggestionInput,
@@ -22,6 +26,7 @@ import {
 } from './types';
 import {
   buildAgenticReviewPrompt,
+  buildResolveClarificationPrompt,
   buildExtractProjectProfilePrompt,
   buildIssueReplySuggestionPrompt,
   buildReconsiderFindingPrompt,
@@ -40,14 +45,18 @@ function truncate(text: string, max = 500): string {
 
 export class OpenAiCompatibleLlmAdapter implements LlmPort {
   private readonly client: OpenAI;
+  private readonly temperature: number | null;
 
   constructor(
     private readonly model: string,
     baseURL: string,
     apiKey: string,
     private readonly embeddingFn: (text: string) => Promise<number[]>,
+    options: { temperature?: number | null } = {},
   ) {
     this.client = new OpenAI({ baseURL, apiKey });
+    // null = no enviar el parámetro (los modelos de razonamiento de OpenAI solo aceptan el valor por defecto)
+    this.temperature = options.temperature === undefined ? 0.1 : options.temperature;
   }
 
   async reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> {
@@ -57,16 +66,39 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
 
   /** Revisión con investigación: el modelo puede pedir herramientas de solo lectura (leer archivos,
    * buscar, historial…) en varias rondas antes de emitir el mismo JSON de veredicto de `reviewDiff`.
-   * El bucle está acotado (rondas, consultas, caracteres devueltos, tiempo): si se agota, se le pide
-   * el veredicto con lo reunido hasta ahí. Si el proveedor no acepta herramientas en la primera
-   * ronda, lanza `AgenticReviewUnsupportedError` para que el llamador use el análisis estándar. */
-  async reviewDiffAgentic(
-    input: ReviewDiffInput,
+   * Si el proveedor no acepta herramientas en la primera ronda, lanza `AgenticReviewUnsupportedError`
+   * para que el llamador use el análisis estándar. */
+  async reviewDiffAgentic(input: ReviewDiffInput, toolbox: AgentToolbox, options: AgenticReviewOptions): Promise<AgenticReviewOutcome> {
+    const { value, trace, stats } = await this.runAgentLoop(buildAgenticReviewPrompt(input), toolbox, options, reviewResultSchema);
+    return { result: value, trace, stats };
+  }
+
+  async resolveClarification(input: ResolveClarificationInput): Promise<ClarificationResult> {
+    return this.requestStructured(buildResolveClarificationPrompt(input, false), clarificationResultSchema);
+  }
+
+  /** Re-evalúa una pregunta con la respuesta del desarrollador, pudiendo verificar otros repos con herramientas. */
+  async resolveClarificationAgentic(
+    input: ResolveClarificationInput,
     toolbox: AgentToolbox,
     options: AgenticReviewOptions,
-  ): Promise<AgenticReviewOutcome> {
+  ): Promise<{ result: ClarificationResult; trace: ToolTraceEntry[]; stats: AgenticReviewStats }> {
+    const { value, trace, stats } = await this.runAgentLoop(buildResolveClarificationPrompt(input, true), toolbox, options, clarificationResultSchema);
+    return { result: value, trace, stats };
+  }
+
+  /** Bucle de investigación común: el modelo pide herramientas de solo lectura en varias rondas y termina con un JSON que
+   * cumple `schema`. Está acotado (rondas, consultas, caracteres devueltos, tiempo): si se agota, se le pide el veredicto
+   * con lo reunido hasta ahí. Si el proveedor no acepta herramientas en la primera ronda, lanza
+   * `AgenticReviewUnsupportedError` para que el llamador use la versión sin herramientas. */
+  private async runAgentLoop<T>(
+    initialMessages: ChatCompletionMessageParam[],
+    toolbox: AgentToolbox,
+    options: AgenticReviewOptions,
+    schema: ZodSchema<T>,
+  ): Promise<{ value: T; trace: ToolTraceEntry[]; stats: AgenticReviewStats }> {
     const startedAt = Date.now();
-    const messages: ChatCompletionMessageParam[] = buildAgenticReviewPrompt(input);
+    const messages: ChatCompletionMessageParam[] = [...initialMessages];
     const tools = toolbox.definitions.map((d) => ({
       type: 'function' as const,
       function: { name: d.name, description: d.description, parameters: d.parameters },
@@ -80,8 +112,8 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     let rounds = 0;
     let budgetExhausted = false;
 
-    const outcome = (result: ReviewResult): AgenticReviewOutcome => ({
-      result,
+    const outcome = (value: T) => ({
+      value,
       trace,
       stats: { rounds, toolCalls, promptTokens, completionTokens, durationMs: Date.now() - startedAt, budgetExhausted },
     });
@@ -97,7 +129,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       let completion;
       try {
         completion = await this.client.chat.completions.create(
-          { model: this.model, messages, tools, tool_choice: 'auto', temperature: 0.1 },
+          { model: this.model, messages, tools, tool_choice: 'auto', ...(this.temperature === null ? {} : { temperature: this.temperature }) },
           { timeout: Math.max(5_000, Math.min(remainingMs, 120_000)) },
         );
       } catch (err) {
@@ -120,7 +152,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       if (calls.length === 0) {
         // Sin más herramientas: debe ser el veredicto. Si no cumple el esquema, se le pide corregirlo
         // (sin herramientas) con la misma lógica de reintento de las demás llamadas.
-        const parsed = parseReviewJson(message.content ?? '');
+        const parsed = parseJsonWith(schema, message.content ?? '');
         if (parsed.ok) return outcome(parsed.value);
         console.warn(`[llm-port] veredicto del análisis profundo no cumplió el esquema, reintentando: ${parsed.error}`);
         messages.push({ role: 'assistant', content: message.content ?? '' });
@@ -128,7 +160,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
           role: 'user',
           content: `Tu respuesta no cumplió el esquema esperado (${parsed.error}). Responde de nuevo SOLO con el JSON válido del veredicto, sin texto adicional.`,
         });
-        return outcome(await this.requestStructured(messages, reviewResultSchema));
+        return outcome(await this.requestStructured(messages, schema));
       }
 
       messages.push({ role: 'assistant', content: message.content ?? null, tool_calls: calls });
@@ -181,7 +213,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       content:
         'Se agotó el presupuesto de investigación. Emite AHORA el veredicto final como el JSON del esquema indicado, con la evidencia que reuniste hasta aquí (indica en la justificación qué no alcanzaste a verificar).',
     });
-    return outcome(await this.requestStructured(messages, reviewResultSchema));
+    return outcome(await this.requestStructured(messages, schema));
   }
 
   async reconsiderFinding(input: ReconsiderFindingInput): Promise<ReconsiderFindingResult> {
@@ -244,7 +276,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
         model: this.model,
         messages,
         response_format: { type: 'json_object' },
-        temperature: 0.1,
+        ...(this.temperature === null ? {} : { temperature: this.temperature }),
       });
     } catch (err) {
       console.error(`[llm-port] fallo llamando al proveedor de inferencia (modelo "${this.model}"): ${(err as Error).message}`);
@@ -259,13 +291,13 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
   }
 }
 
-/** El veredicto final puede venir con ```json ... ``` o con texto alrededor: toma el primer objeto JSON. */
-function parseReviewJson(content: string): { ok: true; value: ReviewResult } | { ok: false; error: string } {
+/** El JSON final puede venir dentro de un bloque ```json o con texto alrededor: toma el primer objeto JSON y lo valida. */
+function parseJsonWith<T>(schema: ZodSchema<T>, content: string): { ok: true; value: T } | { ok: false; error: string } {
   const start = content.indexOf('{');
   const end = content.lastIndexOf('}');
   if (start < 0 || end <= start) return { ok: false, error: 'no se encontró un objeto JSON' };
   try {
-    return { ok: true, value: reviewResultSchema.parse(JSON.parse(content.slice(start, end + 1))) };
+    return { ok: true, value: schema.parse(JSON.parse(content.slice(start, end + 1))) };
   } catch (err) {
     return { ok: false, error: (err as Error).message.slice(0, 400) };
   }

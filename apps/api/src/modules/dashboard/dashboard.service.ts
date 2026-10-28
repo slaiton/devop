@@ -1,16 +1,19 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import type { PoolClient } from 'pg';
 import { withTenant } from '@devsentinel/database';
 import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import {
+  CLARIFICATION_QUEUE_NAME,
   PROJECT_CONTEXT_QUEUE_NAME,
   RECONSIDER_QUEUE_NAME,
+  type ClarificationJobPayload,
   type ProjectContextJobPayload,
   type ReconsiderJobPayload,
 } from '@devsentinel/event-contracts';
 import { EmailService } from '../../common/email.service';
+import { NOTIFICATION_SOUNDS, isNotificationSound } from '../notifications/sounds';
 
 interface Actor {
   userId: string;
@@ -25,6 +28,7 @@ export class DashboardService {
     private readonly emailService: EmailService,
     @InjectQueue(RECONSIDER_QUEUE_NAME) private readonly reconsiderQueue: Queue<ReconsiderJobPayload>,
     @InjectQueue(PROJECT_CONTEXT_QUEUE_NAME) private readonly projectContextQueue: Queue<ProjectContextJobPayload>,
+    @InjectQueue(CLARIFICATION_QUEUE_NAME) private readonly clarificationQueue: Queue<ClarificationJobPayload>,
   ) {}
 
   /** admin ve todos los repos de la org; un usuario ("user") solo los que tiene
@@ -197,8 +201,16 @@ export class DashboardService {
                 rr.gate_decision, rr.author_name, rr.author_email, rr.notified_at,
                 rr.reviewed_at, rr.reviewed_by,
                 rr.started_at, rr.completed_at,
-                (SELECT count(*) FROM findings f WHERE f.review_run_id = rr.id AND f.blocking) AS blocking_count
+                (SELECT count(*) FROM findings f WHERE f.review_run_id = rr.id AND f.blocking) AS blocking_count,
+                (SELECT count(*)::int FROM findings f WHERE f.review_run_id = rr.id AND f.status = 'awaiting_clarification') AS questions_count,
+                pr.id AS pull_request_id, pr.github_pr_number AS pr_number, pr.status AS pr_status,
+                'https://github.com/' || rp.full_name || '/pull/' || pr.github_pr_number AS pr_url
          FROM review_runs rr
+         JOIN repositories rp ON rp.id = rr.repository_id
+         LEFT JOIN LATERAL (
+           SELECT id, github_pr_number, status FROM pull_requests
+           WHERE source_review_run_id = rr.id ORDER BY created_at DESC LIMIT 1
+         ) pr ON true
          WHERE rr.repository_id = $1 AND rr.trigger = 'push'
          ORDER BY rr.started_at DESC
          LIMIT $2 OFFSET $3`,
@@ -479,14 +491,20 @@ export class DashboardService {
            WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) DESC`,
         [reviewRunId],
       );
-      return { ...run, findings: findingRows };
+      const { rows: clarificationRows } = await client.query(
+        `SELECT fc.id, fc.finding_id, fc.role, fc.body, fc.author_login, fc.source, fc.created_at
+         FROM finding_clarifications fc JOIN findings f ON f.id = fc.finding_id
+         WHERE f.review_run_id = $1 ORDER BY fc.created_at, fc.id`,
+        [reviewRunId],
+      );
+      return { ...run, findings: findingRows, clarifications: clarificationRows };
     });
   }
 
   async getReviewRunDiff(orgId: string, reviewRunId: string, actor: Actor): Promise<string> {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
-        `SELECT rr.repository_id, rr.commit_sha, r.full_name, gi.installation_id, pr.github_pr_number
+        `SELECT rr.repository_id, rr.developer_id, rr.commit_sha, r.full_name, gi.installation_id, pr.github_pr_number
          FROM review_runs rr
          JOIN repositories r ON r.id = rr.repository_id
          JOIN github_installations gi ON gi.id = r.github_installation_id
@@ -510,16 +528,105 @@ export class DashboardService {
 
   /** admin ve cualquier review run de la org; un usuario ("user") solo los de un repo
    * que tenga asignado en repository_members. */
-  private async assertCanViewReviewRun(client: PoolClient, run: { repository_id: string }, actor: Actor): Promise<void> {
+  /** Responder una pregunta de la IA: un admin, el desarrollador autor del commit (su cuenta vinculada) o quien tenga el repo asignado. */
+  private async assertCanAnswerClarification(
+    client: PoolClient,
+    run: { repository_id: string; developer_id: string | null },
+    actor: Actor,
+  ): Promise<void> {
     if (actor.role === 'admin') return;
-    const allowed = await this.isRepoMember(client, run.repository_id, actor.userId);
-    if (!allowed) throw new ForbiddenException('no tienes acceso a este review run');
+    if (run.developer_id) {
+      const { rows } = await client.query('SELECT 1 FROM developers WHERE id = $1 AND user_id = $2', [run.developer_id, actor.userId]);
+      if (rows.length > 0) return;
+    }
+    if (await this.isRepoMember(client, run.repository_id, actor.userId)) return;
+    throw new ForbiddenException('no tienes acceso a este hallazgo');
+  }
+
+  private async loadAwaitingFinding(client: PoolClient, findingId: string) {
+    const { rows } = await client.query(
+      `SELECT f.id, f.status, f.review_run_id, rr.repository_id, rr.developer_id
+       FROM findings f JOIN review_runs rr ON rr.id = f.review_run_id
+       WHERE f.id = $1 FOR UPDATE OF f`,
+      [findingId],
+    );
+    if (!rows[0]) throw new NotFoundException('hallazgo no encontrado');
+    if (rows[0].status !== 'awaiting_clarification') {
+      throw new ConflictException('este hallazgo ya no está pendiente de aclaración (la IA o un administrador ya lo resolvió)');
+    }
+    return rows[0] as { id: string; review_run_id: string; repository_id: string; developer_id: string | null };
+  }
+
+  /** El desarrollador responde la pregunta de la IA: queda en la conversación y se encola la re-evaluación. */
+  async answerClarification(orgId: string, findingId: string, actor: Actor, text: unknown) {
+    const body = typeof text === 'string' ? text.trim() : '';
+    if (!body) throw new BadRequestException('escribe tu respuesta');
+    if (body.length > 4000) throw new BadRequestException('la respuesta es demasiado larga (máximo 4000 caracteres)');
+
+    const created = await withTenant(orgId, async (client) => {
+      const finding = await this.loadAwaitingFinding(client, findingId);
+      await this.assertCanAnswerClarification(client, finding, actor);
+      const { rows: userRows } = await client.query('SELECT name, email FROM users WHERE id = $1', [actor.userId]);
+      const author = userRows[0]?.name ?? userRows[0]?.email ?? null;
+      const { rows } = await client.query(
+        `INSERT INTO finding_clarifications (organization_id, finding_id, role, body, author_login, posted_by, source)
+         VALUES ($1, $2, 'developer', $3, $4, $5, 'platform')
+         RETURNING id, finding_id, role, body, author_login, source, created_at`,
+        [orgId, findingId, body, author, actor.userId],
+      );
+      // Si ya estaba escalado a una persona, una respuesta nueva vuelve a ponerlo en manos de la IA.
+      await client.query('UPDATE findings SET needs_human = false WHERE id = $1', [findingId]);
+      return { clarification: rows[0], repositoryId: finding.repository_id, reviewRunId: finding.review_run_id };
+    });
+
+    await this.clarificationQueue.add(
+      CLARIFICATION_QUEUE_NAME,
+      { organizationId: orgId, repositoryId: created.repositoryId, reviewRunId: created.reviewRunId, findingId, kind: 'reply' },
+      { attempts: 3, backoff: { type: 'exponential', delay: 20_000 }, removeOnComplete: true, removeOnFail: 50, jobId: `clar-${created.clarification.id}` },
+    );
+    return created.clarification;
+  }
+
+  /** Un admin decide a mano (sin pasar por la IA): confirmar el hallazgo como bloqueante o descartarlo. */
+  async decideClarification(orgId: string, findingId: string, userId: string, decision: unknown, comment: unknown) {
+    if (decision !== 'confirm' && decision !== 'dismiss') throw new BadRequestException('decision debe ser "confirm" o "dismiss"');
+    const note = typeof comment === 'string' ? comment.trim().slice(0, 2000) : '';
+    const ids = await withTenant(orgId, async (client) => {
+      const finding = await this.loadAwaitingFinding(client, findingId);
+      return { repositoryId: finding.repository_id, reviewRunId: finding.review_run_id };
+    });
+    await this.clarificationQueue.add(
+      CLARIFICATION_QUEUE_NAME,
+      {
+        organizationId: orgId,
+        repositoryId: ids.repositoryId,
+        reviewRunId: ids.reviewRunId,
+        findingId,
+        kind: 'manual',
+        manual: { decision, userId, comment: note || undefined },
+      },
+      { attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true, removeOnFail: 50 },
+    );
+    return { queued: true };
+  }
+
+  /** Un admin ve todo; un usuario, los repos que tiene asignados y los análisis de SUS commits (el desarrollador vinculado a su
+   * cuenta: es quien recibe el aviso del análisis y debe poder abrirlo y responder las preguntas de la IA). */
+  private async assertCanViewReviewRun(client: PoolClient, run: { repository_id: string; developer_id?: string | null }, actor: Actor): Promise<void> {
+    if (actor.role === 'admin') return;
+    if (await this.isRepoMember(client, run.repository_id, actor.userId)) return;
+    if (run.developer_id) {
+      const { rows } = await client.query('SELECT 1 FROM developers WHERE id = $1 AND user_id = $2', [run.developer_id, actor.userId]);
+      if (rows.length > 0) return;
+    }
+    throw new ForbiddenException('no tienes acceso a este review run');
   }
 
   async getMyProfile(orgId: string, userId: string) {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `SELECT d.id AS developer_id, d.github_login, d.email, d.display_name,
+                d.notification_sound, d.notification_muted,
                 count(rr.id) AS total_reviews,
                 count(*) FILTER (WHERE rr.gate_decision = 'apto') AS apto_count,
                 count(*) FILTER (WHERE rr.gate_decision = 'no_apto') AS no_apto_count,
@@ -533,6 +640,8 @@ export class DashboardService {
       return (
         rows[0] ?? {
           developer_id: null,
+          notification_sound: null,
+          notification_muted: false,
           github_login: null,
           email: null,
           display_name: null,
@@ -568,6 +677,8 @@ export class DashboardService {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `SELECT d.id, d.github_login, d.email, d.display_name,
+                d.user_id, u.email AS user_email, u.name AS user_name,
+                d.notification_sound, d.notification_volume::float AS notification_volume, d.notification_muted,
                 count(rr.id) AS total_reviews,
                 count(*) FILTER (WHERE rr.gate_decision = 'apto') AS apto_count,
                 count(*) FILTER (WHERE rr.gate_decision = 'no_apto') AS no_apto_count,
@@ -578,13 +689,43 @@ export class DashboardService {
                   WHERE rr2.developer_id = d.id AND f.blocking
                 ), 0) AS blocking_findings_total
          FROM developers d
+         LEFT JOIN users u ON u.id = d.user_id
          LEFT JOIN review_runs rr ON rr.developer_id = d.id
          WHERE d.organization_id = $1
-         GROUP BY d.id
+         GROUP BY d.id, u.id
          ORDER BY total_reviews DESC`,
         [orgId],
       );
       return rows;
+    });
+  }
+
+  /** Tono, volumen y silencio del aviso sonoro de un desarrollador (lo configura el admin). */
+  async updateDeveloperNotification(
+    orgId: string,
+    developerId: string,
+    input: { sound?: string | null; volume?: number; muted?: boolean },
+  ) {
+    if (input.sound !== undefined && input.sound !== null && !isNotificationSound(input.sound)) {
+      throw new BadRequestException(`sound debe ser uno de: ${NOTIFICATION_SOUNDS.map((s) => s.id).join(', ')} (o null para el tono por defecto)`);
+    }
+    if (input.volume !== undefined && !(typeof input.volume === 'number' && input.volume >= 0 && input.volume <= 1)) {
+      throw new BadRequestException('volume debe ser un número entre 0 y 1');
+    }
+    if (input.muted !== undefined && typeof input.muted !== 'boolean') throw new BadRequestException('muted debe ser true o false');
+
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `UPDATE developers SET
+           notification_sound = CASE WHEN $2::boolean THEN $3 ELSE notification_sound END,
+           notification_volume = COALESCE($4, notification_volume),
+           notification_muted = COALESCE($5, notification_muted)
+         WHERE id = $1
+         RETURNING id, notification_sound, notification_volume::float AS notification_volume, notification_muted`,
+        [developerId, input.sound !== undefined, input.sound ?? null, input.volume ?? null, input.muted ?? null],
+      );
+      if (!rows[0]) throw new NotFoundException('developer no encontrado');
+      return rows[0];
     });
   }
 

@@ -1,8 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { getPool, withTenant } from '@devsentinel/database';
-import { OpenAiCompatibleLlmAdapter, embedLocally } from '@devsentinel/llm-port';
-import { getSystemSettings } from '@devsentinel/settings';
+import { withTenant } from '@devsentinel/database';
 import type { IssueReplySuggestionJobPayload } from '@devsentinel/event-contracts';
+import { createLlmRouter } from '../../common/llmRouter.factory';
 
 @Injectable()
 export class IssueReplyService {
@@ -13,13 +12,7 @@ export class IssueReplyService {
    * publica el borrador (editado o no) como comentario aparte, vía el endpoint normal
    * de comentarios. Ningún adapter de git hace falta acá. */
   async process(payload: IssueReplySuggestionJobPayload): Promise<void> {
-    const settings = await getSystemSettings(getPool());
-    const llm = new OpenAiCompatibleLlmAdapter(
-      settings?.llmModel ?? '',
-      settings?.llmProviderBaseUrl ?? '',
-      settings?.llmProviderApiKey ?? '',
-      embedLocally,
-    );
+    const llm = await createLlmRouter();
 
     await withTenant(payload.organizationId, async (client) => {
       const { rows: issueRows } = await client.query(

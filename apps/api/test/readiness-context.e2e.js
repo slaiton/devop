@@ -11,7 +11,7 @@
  *   docker compose exec -T api node - < apps/api/test/readiness-context.e2e.js
  *
  * Crea organizaciones/Apps/repos de prueba y los borra al terminar; restaura la configuración
- * del LLM que hubiera en system_settings. */
+ * de los agentes de IA (llm_providers) que hubiera. */
 const crypto = require('crypto');
 const http = require('http');
 const { Pool } = require('pg');
@@ -211,7 +211,7 @@ async function waitRun(cookie, repoId, runId, timeoutMs = 45000) {
 
   const admin = await cookieFor(adminEmail, 'Passw0rd!rdy');
   const user = await cookieFor(userEmail, 'Passw0rd!rdy');
-  const original = (await q('SELECT llm_provider_base_url, llm_model, llm_provider_api_key_encrypted FROM system_settings WHERE id = true'))[0] ?? null;
+  const originalProviders = await q('SELECT * FROM llm_providers');
 
   try {
     // ================================================================== INDICADOR DE APTITUD
@@ -278,9 +278,10 @@ async function waitRun(cookie, repoId, runId, timeoutMs = 45000) {
       mock.contents[`${repo.name}:package.json`] = '{"dependencies":{"@nestjs/core":"^10.0.0"}}';
       mock.contents[`${repo.name}:src`] = [{ type: 'file', name: 'main.ts' }, { type: 'dir', name: 'modules' }];
     }
+    // El agente de IA de la prueba es el simulado (se restauran los reales al terminar)
+    await q('DELETE FROM llm_providers');
     await q(
-      `INSERT INTO system_settings(id, llm_provider_base_url, llm_model, llm_provider_api_key_encrypted) VALUES (true, $1, 'mock-model', $2)
-       ON CONFLICT (id) DO UPDATE SET llm_provider_base_url = $1, llm_model = 'mock-model', llm_provider_api_key_encrypted = $2`,
+      `INSERT INTO llm_providers(name, kind, base_url, model, api_key_encrypted, position) VALUES ('Simulado', 'custom', $1, 'mock-model', $2, 1)`,
       [`http://api:${MOCK_PORT}/v1`, encrypt('k')],
     );
     const profileOf = async (repo) => (await q('SELECT * FROM project_profiles WHERE repository_id = $1', [repo.id]))[0];
@@ -329,22 +330,25 @@ async function waitRun(cookie, repoId, runId, timeoutMs = 45000) {
     check('el fallo no deja un perfil vacío', !(await profileOf(A2)));
 
     // 5) LLM sin configurar
-    await q(`UPDATE system_settings SET llm_model = NULL WHERE id = true`);
+    await q('UPDATE llm_providers SET enabled = false');
     const nollm = await api(`/dashboard/repositories/${A1.id}/project-profile/generate`, admin, { method: 'POST', body: {} });
     const done5 = await waitRun(admin, A1.id, nollm.json.id);
-    check('LLM sin configurar → falla indicando dónde configurarlo', done5?.status === 'failed' && /proveedor de LLM no está configurado/.test(done5.error_message), JSON.stringify(done5));
+    check('LLM sin configurar → falla indicando dónde configurarlo', done5?.status === 'failed' && /ningún agente de IA activo/.test(done5.error_message), JSON.stringify(done5));
 
     // 6) el indicador se entera de que ya hay contexto
-    await q(`UPDATE system_settings SET llm_model = 'mock-model' WHERE id = true`);
+    await q('UPDATE llm_providers SET enabled = true');
     const readiness3 = await api(`/repository-readiness?repositoryId=${A3.id}&refresh=1`, admin);
     check('tras generar contexto el repo ya no recomienda generarlo', item(readiness3.json[0], 'project_context').ok && /IA/.test(item(readiness3.json[0], 'project_context').message), item(readiness3.json[0], 'project_context').message);
     const last = await api(`/dashboard/repositories/${A3.id}/project-profile/generation`, admin);
     check('generation devuelve la última corrida', last.json.id === rep.json.id && last.json.status === 'done');
   } finally {
-    if (original) {
-      await q(`UPDATE system_settings SET llm_provider_base_url = $1, llm_model = $2, llm_provider_api_key_encrypted = $3 WHERE id = true`, [original.llm_provider_base_url, original.llm_model, original.llm_provider_api_key_encrypted]);
-    } else {
-      await q('DELETE FROM system_settings WHERE id = true');
+    await q('DELETE FROM llm_providers');
+    for (const p of originalProviders) {
+      await q(
+        `INSERT INTO llm_providers(id, name, kind, base_url, model, api_key_encrypted, position, enabled, last_used_at, last_error, last_error_at, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [p.id, p.name, p.kind, p.base_url, p.model, p.api_key_encrypted, p.position, p.enabled, p.last_used_at, p.last_error, p.last_error_at, p.created_at, p.updated_at],
+      );
     }
     await q(`DELETE FROM webhook_deliveries WHERE user_agent = 'GitHub-Hookshot/rdy' OR organization_id = ANY($1)`, [[orgA, orgB]]);
     await q('DELETE FROM users WHERE email LIKE $1', [`%-${suffix}@rdy.test`]);

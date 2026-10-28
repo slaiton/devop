@@ -2,7 +2,9 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import parseDiff from 'parse-diff';
 import { GateBadge } from '../../../GateBadge';
-import { AnalysisTrace, type AnalysisStats, type TraceEntry } from './AnalysisTrace';
+import { getSession } from '../../../session';
+import { AnalysisTrace, type AnalysisStats, type LlmFailover, type TraceEntry } from './AnalysisTrace';
+import { ClarificationThread, type ClarificationMessage } from './ClarificationThread';
 import { ReconsiderFindingButton } from './ReconsiderFindingButton';
 
 interface Finding {
@@ -16,7 +18,10 @@ interface Finding {
   explanation: string;
   blocking: boolean;
   violated_rule: string | null;
-  status: 'open' | 'fixed' | 'dismissed_false_positive';
+  status: 'open' | 'fixed' | 'dismissed_false_positive' | 'awaiting_clarification';
+  question: string | null;
+  needs_human: boolean;
+  clarification_round: number;
   resolution_comment: string | null;
   resolved_at: string | null;
 }
@@ -43,9 +48,13 @@ interface ReviewRunDetail {
   analysis_note: string | null;
   analysis_trace: TraceEntry[] | null;
   analysis_stats: AnalysisStats | null;
+  llm_provider: string | null;
+  llm_model: string | null;
+  llm_failovers: LlmFailover[] | null;
   github_pr_number: number | null;
   pull_request_title: string | null;
   findings: Finding[];
+  clarifications: ClarificationMessage[];
 }
 
 const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
@@ -69,6 +78,7 @@ function findingsForLine(findings: Finding[], filePath: string, line: number): F
 }
 
 const FINDING_STATUS_LABEL: Record<Finding['status'], string> = {
+  awaiting_clarification: 'pregunta pendiente',
   open: 'abierto',
   fixed: 'corregido',
   dismissed_false_positive: 'falso positivo',
@@ -123,11 +133,16 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
     return <p>Review run no encontrado.</p>;
   }
 
+  const session = await getSession();
+  const isAdmin = session?.role === 'admin';
   const files = parseDiff(diffResponse.diff ?? '');
 
-  const critical = run.findings.filter((f) => f.severity === 'critical');
-  const important = run.findings.filter((f) => f.severity === 'high' || f.severity === 'medium');
-  const minor = run.findings.filter((f) => f.severity === 'low' || f.severity === 'info');
+  // Las preguntas de la IA van aparte: no son hallazgos confirmados y todavía no bloquean.
+  const questions = run.findings.filter((f) => f.status === 'awaiting_clarification');
+  const confirmed = run.findings.filter((f) => f.status !== 'awaiting_clarification');
+  const critical = confirmed.filter((f) => f.severity === 'critical');
+  const important = confirmed.filter((f) => f.severity === 'high' || f.severity === 'medium');
+  const minor = confirmed.filter((f) => f.severity === 'low' || f.severity === 'info');
   const violatedRules = run.findings.filter((f) => f.violated_rule);
 
   return (
@@ -153,7 +168,11 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
       </p>
       {run.summary && <p>{run.summary}</p>}
 
-      <AnalysisTrace mode={run.analysis_mode} note={run.analysis_note} trace={run.analysis_trace} stats={run.analysis_stats} />
+      <AnalysisTrace mode={run.analysis_mode} note={run.analysis_note} trace={run.analysis_trace} stats={run.analysis_stats}
+        llmProvider={run.llm_provider}
+        llmModel={run.llm_model}
+        llmFailovers={run.llm_failovers}
+      />
 
       {run.analyzed_files && run.analyzed_files.length > 0 && (
         <>
@@ -161,6 +180,29 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
           <div className="card-row">
             {run.analyzed_files.map((f) => (
               <code key={f}>{f}</code>
+            ))}
+          </div>
+        </>
+      )}
+
+      {questions.length > 0 && (
+        <>
+          <h1>
+            Preguntas de la IA ({questions.length})
+          </h1>
+          <p style={{ color: 'var(--ink-muted)' }}>
+            La IA no pudo comprobar estos puntos con lo que ve en el commit. <strong>No bloquean todavía</strong>: responde (o indica qué
+            repositorio revisar) y los reevalúa antes de decidir si son bloqueantes.
+          </p>
+          <div className="qa-list">
+            {questions.map((q) => (
+              <ClarificationThread
+                key={q.id}
+                finding={q}
+                messages={run.clarifications.filter((m) => m.finding_id === q.id)}
+                isAdmin={isAdmin}
+                canAnswer
+              />
             ))}
           </div>
         </>

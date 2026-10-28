@@ -8,6 +8,12 @@ export interface TraceEntry {
   ms: number;
 }
 
+export interface LlmFailover {
+  provider: string;
+  model: string;
+  error: string;
+}
+
 export interface AnalysisStats {
   rounds: number;
   toolCalls: number;
@@ -52,11 +58,17 @@ export function AnalysisTrace({
   note,
   trace,
   stats,
+  llmProvider,
+  llmModel,
+  llmFailovers,
 }: {
   mode: 'standard' | 'deep' | null;
   note: string | null;
   trace: TraceEntry[] | null;
   stats: AnalysisStats | null;
+  llmProvider?: string | null;
+  llmModel?: string | null;
+  llmFailovers?: LlmFailover[] | null;
 }) {
   if (!mode) return null; // revisiones anteriores a que se guardara el modo
 
@@ -71,6 +83,23 @@ export function AnalysisTrace({
           </span>
         )}
       </div>
+      {llmProvider && (
+        <p className="trace-agent">
+          Agente que lo analizó: <strong>{llmProvider}</strong>
+          {llmModel && (
+            <>
+              {' '}
+              · <code>{llmModel}</code>
+            </>
+          )}
+        </p>
+      )}
+      {llmFailovers && llmFailovers.length > 0 && (
+        <p className="status-warn trace-note">
+          Lo respondió otro agente porque antes falló:{' '}
+          {llmFailovers.map((f) => `${f.provider} (${f.error})`).join('; ')}
+        </p>
+      )}
       {note && <p className="status-warn trace-note">{note}</p>}
       {trace && trace.length > 0 && (
         <details>

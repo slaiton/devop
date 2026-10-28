@@ -15,6 +15,16 @@ export interface IssueContentFinding {
   violated_rule: string | null;
 }
 
+export interface IssueContentQuestion {
+  severity: 'info' | 'low' | 'medium' | 'high' | 'critical';
+  file_path: string;
+  line_start: number | null;
+  title: string;
+  question: string;
+  /** Ya se hicieron varias rondas y la IA no pudo decidir: espera la decisión de una persona. */
+  needs_human: boolean;
+}
+
 export interface BuildIssueContentInput {
   repositoryFullName: string;
   pullRequestNumber: number | null;
@@ -23,6 +33,8 @@ export interface BuildIssueContentInput {
   lastCommitSha: string;
   reviewRun: IssueContentReviewRun;
   blockingFindings: IssueContentFinding[];
+  /** Hallazgos que la IA dejó como pregunta (no bloquean hasta que se confirmen). */
+  questions?: IssueContentQuestion[];
   reviewRunId: string;
 }
 
@@ -60,9 +72,14 @@ export function commitLinkMd(repositoryFullName: string, commitSha: string): str
 export function buildIssueContent(input: BuildIssueContentInput): { title: string; body: string } {
   const { repositoryFullName, pullRequestNumber, branch, firstCommitSha, lastCommitSha, reviewRun, blockingFindings, reviewRunId } =
     input;
+  const questions = input.questions ?? [];
   const target = pullRequestNumber ? `PR #${pullRequestNumber}` : `\`${branch}\``;
 
-  const title = `[DevSentinel AI] Hallazgos bloqueantes en ${target}`;
+  // Con bloqueantes el título es el de siempre; si solo hay preguntas, lo dice (se renombra una vez al cambiar de situación).
+  const title =
+    blockingFindings.length === 0 && questions.length > 0
+      ? `[DevSentinel AI] Preguntas de la IA en ${target}`
+      : `[DevSentinel AI] Hallazgos bloqueantes en ${target}`;
 
   const sorted = [...blockingFindings].sort(
     (a, b) => (SEVERITY_ORDER[b.severity] ?? 0) - (SEVERITY_ORDER[a.severity] ?? 0),
@@ -75,6 +92,19 @@ export function buildIssueContent(input: BuildIssueContentInput): { title: strin
         )
         .join('\n')
     : '_Sin hallazgos bloqueantes vigentes._';
+
+  const questionsMd = questions.length
+    ? [
+        '#### Preguntas de la IA — necesitamos tu respuesta',
+        'Estos puntos **no bloquean** todavía: la IA no pudo comprobarlos y prefiere preguntar antes de decidir. Responde en un comentario de este issue (o desde DevSentinel). Si el cambio depende de otro repositorio, indica cuál y qué archivo revisar.',
+        '',
+        ...questions.map(
+          (q) =>
+            `- **${q.title}** (${q.file_path}${q.line_start ? `:${q.line_start}` : ''})\n  ❓ ${q.question}${q.needs_human ? '\n  _Pendiente de decisión de una persona (la IA ya hizo sus preguntas)._' : ''}`,
+        ),
+        '',
+      ].join('\n')
+    : '';
 
   const commitLine =
     firstCommitSha === lastCommitSha
@@ -93,8 +123,9 @@ export function buildIssueContent(input: BuildIssueContentInput): { title: strin
     '#### Hallazgos bloqueantes',
     findingsMd,
     '',
+    ...(questionsMd ? [questionsMd] : []),
     '---',
-    `_Este issue lo gestiona DevSentinel AI automáticamente: se actualiza en cada push/reconsideración de ${target} y se cierra solo cuando ya no queden hallazgos bloqueantes._`,
+    `_Este issue lo gestiona DevSentinel AI automáticamente: se actualiza en cada push/reconsideración de ${target} y se cierra solo cuando ya no queden hallazgos bloqueantes ni preguntas pendientes._`,
     issueMarker(reviewRunId),
   ].join('\n');
 

@@ -35,6 +35,13 @@ export const findingSchema = z.object({
     .optional(),
   confidence: z.number().min(0).max(1),
   violated_rule: z.string().nullable().optional(),
+  /** Duda que la IA no puede resolver sola (¿ya se actualizó el otro repo/servicio?). Con pregunta, el hallazgo NO bloquea hasta confirmarse. */
+  question: z.string().nullable().optional(),
+  /** Qué repo/archivos revisaría la IA si se lo indican. */
+  verify_with: z
+    .object({ repo: z.string().nullable().optional(), paths: z.array(z.string()).nullable().optional() })
+    .nullable()
+    .optional(),
 });
 
 export const reviewResultSchema = z.object({
@@ -250,4 +257,58 @@ export class AgenticReviewUnsupportedError extends Error {
     super(message);
     this.name = 'AgenticReviewUnsupportedError';
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Preguntas de la IA al desarrollador: re-evaluación de un hallazgo que quedó como pregunta.
+// ---------------------------------------------------------------------------------------------
+
+export const clarificationResultSchema = z.object({
+  /** confirmed = el problema es real y está comprobado; dismissed = se descarta; need_more_info = aún no se puede decidir. */
+  decision: z.enum(['confirmed', 'dismissed', 'need_more_info']),
+  /** Explicación para el desarrollador (qué verificó y por qué decide así). */
+  explanation: z.string(),
+  /** Con need_more_info: UNA pregunta nueva y más concreta que la anterior. */
+  question: z.string().nullable().optional(),
+  verify_with: z
+    .object({ repo: z.string().nullable().optional(), paths: z.array(z.string()).nullable().optional() })
+    .nullable()
+    .optional(),
+  /** Con confirmed, la severidad definitiva (si la evidencia la cambia). */
+  severity: findingSeveritySchema.nullable().optional(),
+  updated_quality_score: z.number().int().min(0).max(100),
+  updated_risk_level: z.enum(['low', 'medium', 'high']),
+});
+
+export type ClarificationResult = z.infer<typeof clarificationResultSchema>;
+
+export interface ClarificationThreadMessage {
+  role: 'ai' | 'developer' | 'system';
+  body: string;
+  author?: string | null;
+}
+
+export interface ResolveClarificationInput {
+  repositoryFullName: string;
+  commitSha: string;
+  diff: string;
+  finding: {
+    category: string;
+    severity: string;
+    file_path: string;
+    line_start: number | null;
+    title: string;
+    explanation: string;
+    question: string;
+    verify_with: { repo?: string | null; paths?: string[] | null } | null;
+  };
+  /** Conversación sobre este hallazgo, en orden cronológico (la pregunta de la IA, las respuestas, repreguntas…). */
+  thread: ClarificationThreadMessage[];
+  /** Ronda actual (1 = se respondió la primera pregunta) y el máximo de rondas antes de pasar a una persona. */
+  round: number;
+  maxRounds: number;
+  currentQualityScore: number;
+  currentRiskLevel: 'low' | 'medium' | 'high';
+  /** Otros repositorios de la misma instalación que la IA puede leer (owner/nombre). */
+  readableRepositories: string[];
 }

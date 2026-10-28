@@ -1,5 +1,11 @@
 import type { GitProviderPort } from '@devsentinel/git-providers';
-import { buildIssueContent, commitLinkMd, type IssueContentFinding, type IssueContentReviewRun } from './buildIssueContent';
+import {
+  buildIssueContent,
+  commitLinkMd,
+  type IssueContentFinding,
+  type IssueContentQuestion,
+  type IssueContentReviewRun,
+} from './buildIssueContent';
 
 /** Subconjunto de `pg.PoolClient` que necesita este helper — evita atar
  * `@devsentinel/issue-content` a una dependencia directa de `pg` solo por el tipo. */
@@ -25,6 +31,8 @@ export interface UpsertFindingsIssueInput {
    * hallazgo sobre el mismo commit ya analizado; el cierre se documenta con
    * `resolutionContext` en vez de un link a commit. */
   trigger: 'push' | 'reconsideration';
+  /** Login de GitHub de quien escribió el commit: se le menciona al publicar una pregunta para que GitHub le avise. */
+  mentionLogin?: string | null;
   /** Solo relevante con trigger='reconsideration': el comentario humano + la
    * justificación del LLM, para que el cierre quede documentado igual de bien que uno
    * disparado por push. */
@@ -61,6 +69,14 @@ export async function upsertFindingsIssue(
   );
   const blockingFindings: IssueContentFinding[] = findingRows;
 
+  const { rows: questionRows } = await client.query(
+    `SELECT id, severity, file_path, line_start, title, question, needs_human, question_posted_at
+     FROM findings WHERE review_run_id = $1 AND status = 'awaiting_clarification'`,
+    [input.reviewRunId],
+  );
+  const questions: IssueContentQuestion[] = questionRows;
+  const unpostedQuestions = questionRows.filter((q: { question_posted_at: unknown; needs_human: boolean }) => !q.question_posted_at && !q.needs_human);
+
   // Bloquea la fila existente (si hay) dentro de la transacción para serializar
   // contra una ejecución concurrente sobre el mismo PR/branch (p. ej. una
   // reconsideración casi simultánea a un nuevo push).
@@ -73,7 +89,7 @@ export async function upsertFindingsIssue(
   );
   const existing: ExistingIssueRow | undefined = existingRows[0];
 
-  if (blockingFindings.length === 0) {
+  if (blockingFindings.length === 0 && questions.length === 0) {
     if (existing && existing.state === 'open') {
       // Hallazgos que estaban vigentes en el último análisis reflejado en el issue —
       // para poder decir explícitamente cuáles se resolvieron, no solo "ya no hay".
@@ -131,6 +147,7 @@ export async function upsertFindingsIssue(
     lastCommitSha: input.commitSha,
     reviewRun: input.reviewRun,
     blockingFindings,
+    questions,
     reviewRunId: input.reviewRunId,
   });
 
@@ -170,6 +187,7 @@ export async function upsertFindingsIssue(
        WHERE id = $5`,
       [title, body, input.reviewRunId, input.commitSha, existing.id],
     );
+    await postQuestionComments(client, gitAdapter, input, existing.github_issue_number, unpostedQuestions);
     return;
   }
 
@@ -206,4 +224,42 @@ export async function upsertFindingsIssue(
       input.commitSha,
     ],
   );
+  await postQuestionComments(client, gitAdapter, input, created.number, unpostedQuestions);
+}
+
+interface UnpostedQuestion {
+  id: string;
+  title: string;
+  file_path: string;
+  line_start: number | null;
+  question: string;
+}
+
+/** Publica en el issue las preguntas de la IA que todavía no se habían publicado, mencionando a quien escribió el commit:
+ * editar el cuerpo de un issue no avisa a nadie, un comentario con @mención sí. Cada pregunta se publica una sola vez
+ * (`question_posted_at`); una repregunta nueva vuelve a dejarlo en NULL para que salga en el siguiente sync. */
+async function postQuestionComments(
+  client: QueryableClient,
+  gitAdapter: GitProviderPort,
+  input: UpsertFindingsIssueInput,
+  issueNumber: number,
+  pending: UnpostedQuestion[],
+): Promise<void> {
+  if (pending.length === 0) return;
+  const mention = input.mentionLogin ? `@${input.mentionLogin} ` : '';
+  const body = [
+    `❓ ${mention}DevSentinel AI necesita tu respuesta antes de dar ${pending.length === 1 ? 'este punto' : 'estos puntos'} por bloqueante${pending.length === 1 ? '' : 's'}:`,
+    '',
+    ...pending.map((q) => `- **${q.title}** (${q.file_path}${q.line_start ? `:${q.line_start}` : ''})\n  ${q.question}`),
+    '',
+    'Responde en un comentario de este issue o desde DevSentinel. Si depende de otro repositorio, indica cuál (por ejemplo `owner/otro-repo`) y qué archivo revisar.',
+  ].join('\n');
+  await gitAdapter.postIssueComment({
+    installationId: input.installationId,
+    owner: input.owner,
+    repo: input.repo,
+    issueNumber,
+    body,
+  });
+  await client.query('UPDATE findings SET question_posted_at = now() WHERE id = ANY($1::uuid[])', [pending.map((q) => q.id)]);
 }

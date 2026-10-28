@@ -1,6 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
+import { NotificationCenter } from './NotificationCenter';
 
 interface HeaderProps {
   name: string | null;
@@ -41,6 +42,7 @@ export function Header({ name, avatarUrl, role }: HeaderProps) {
         <strong>{currentLabel(pathname)}</strong>
       </div>
       <div className="header-right">
+        <NotificationCenter isAdmin={role === 'admin'} />
         <div className="user-chip">
           <span className="avatar">{avatarUrl ? <img src={avatarUrl} alt="" /> : initials(name)}</span>
           <div>

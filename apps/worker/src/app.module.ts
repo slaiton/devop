@@ -4,6 +4,7 @@ import { ReviewModule } from './modules/review/review.module';
 import { ReconsiderModule } from './modules/reconsider/reconsider.module';
 import { IssueReplyModule } from './modules/issue-reply/issueReply.module';
 import { ProjectContextModule } from './modules/project-context/projectContext.module';
+import { ClarificationModule } from './modules/clarification/clarification.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { ProjectContextModule } from './modules/project-context/projectContext.m
     ReconsiderModule,
     IssueReplyModule,
     ProjectContextModule,
+    ClarificationModule,
   ],
 })
 export class AppModule {}

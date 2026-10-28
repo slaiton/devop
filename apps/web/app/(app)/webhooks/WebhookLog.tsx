@@ -72,6 +72,10 @@ const REASONS: Record<string, { label: string; hint?: string }> = {
   installation_created: { label: 'Cuenta conectada' },
   installation_revoked: { label: 'App desinstalada' },
   installation_repos_updated: { label: 'Repos agregados' },
+  clarification_received: {
+    label: 'Respuesta a una pregunta de la IA',
+    hint: 'Alguien comentó en el issue o PR de seguimiento y ese comentario se tomó como respuesta a una pregunta pendiente: la IA lo reevalúa.',
+  },
   issue_synced: { label: 'Issue sincronizado' },
   ignored_branch: {
     label: 'Rama en la lista de omitidas',

@@ -4,6 +4,27 @@ import { withTenant } from '@devsentinel/database';
 import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import { buildPullRequestContent } from '@devsentinel/pr-content';
 
+const MERGEABLE_POLL_ATTEMPTS = 6;
+const MERGEABLE_POLL_INTERVAL_MS = 1500;
+
+export interface MergeValidation {
+  canMerge: boolean;
+  reasons: string[];
+  /** GitHub no terminó de calcular si es mergeable: conviene reintentar en unos segundos. */
+  pending: boolean;
+  summary: {
+    number: number;
+    title: string;
+    url: string;
+    head: string;
+    base: string;
+    verdict: string | null;
+    score: number | null;
+    risk: string | null;
+    checks: { name: string; status: string; conclusion: string | null }[];
+  };
+}
+
 interface Actor {
   userId: string;
   role: string;
@@ -166,21 +187,14 @@ export class PullRequestsService {
     });
   }
 
-  async validateMerge(orgId: string, pullRequestId: string): Promise<{ canMerge: boolean; reasons: string[] }> {
-    return withTenant(orgId, async (client) => {
+  /** ¿Se puede mergear ahora? Además de decir sí/no con los motivos, devuelve el resumen que muestra la ventana de
+   * confirmación (PR, ramas, veredicto del análisis, checks). Recién creado, GitHub tarda unos segundos en calcular si el
+   * PR es mergeable (`unknown`): se espera ese cálculo en vez de mostrar un falso error. Las llamadas a GitHub se hacen
+   * fuera de la transacción de base de datos para no tenerla abierta mientras se espera. */
+  async validateMerge(orgId: string, pullRequestId: string): Promise<MergeValidation> {
+    const ctx = await withTenant(orgId, async (client) => {
       const { installationId, owner, repo, pr } = await this.loadGithubRef(client, pullRequestId);
       const adapter = await buildGithubAdapterForInstallation(client, installationId);
-      const reasons: string[] = [];
-
-      if (pr.status !== 'open') reasons.push(`el PR ya está ${pr.status}`);
-
-      const status = await adapter.getPullRequestStatus({ installationId, owner, repo, pullNumber: pr.github_pr_number });
-      if (status.state !== 'open') reasons.push('el PR no está abierto en GitHub');
-      if (status.draft) reasons.push('el PR sigue en borrador');
-      if (status.mergeableState === 'dirty') reasons.push('hay conflictos con la rama destino');
-      else if (status.mergeableState === 'behind') reasons.push('la rama está desactualizada respecto al destino');
-      else if (status.mergeableState === 'blocked') reasons.push('bloqueado por revisiones o checks requeridos pendientes en GitHub');
-      else if (status.mergeableState === 'unstable') reasons.push('hay checks no obligatorios fallando');
 
       let analysisRunId = pr.source_review_run_id;
       if (!analysisRunId) {
@@ -190,17 +204,59 @@ export class PullRequestsService {
         );
         analysisRunId = rows[0]?.id ?? null;
       }
-      if (!analysisRunId) {
-        reasons.push('no hay un análisis de DevSentinel asociado a este PR');
-      } else {
-        const { rows } = await client.query(`SELECT status, gate_decision FROM review_runs WHERE id = $1`, [analysisRunId]);
-        const run = rows[0];
-        if (!run || run.status !== 'completed') reasons.push('el análisis de DevSentinel todavía no terminó');
-        else if (run.gate_decision === 'no_apto') reasons.push('el análisis de DevSentinel marcó el commit como NO APTO');
-      }
-
-      return { canMerge: reasons.length === 0, reasons };
+      const run = analysisRunId
+        ? (await client.query(`SELECT status, gate_decision, quality_score, risk_level FROM review_runs WHERE id = $1`, [analysisRunId])).rows[0]
+        : null;
+      return { installationId, owner, repo, pr, adapter, hasAnalysis: Boolean(analysisRunId), run };
     });
+
+    const { installationId, owner, repo, pr, adapter } = ctx;
+    const reasons: string[] = [];
+    if (pr.status !== 'open') reasons.push(`el PR ya está ${pr.status}`);
+
+    const ref = { installationId, owner, repo, pullNumber: pr.github_pr_number };
+    let status = await adapter.getPullRequestStatus(ref);
+    for (let attempt = 0; attempt < MERGEABLE_POLL_ATTEMPTS && status.state === 'open' && status.mergeableState === 'unknown'; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, MERGEABLE_POLL_INTERVAL_MS));
+      status = await adapter.getPullRequestStatus(ref);
+    }
+
+    let pending = false;
+    if (status.state !== 'open') reasons.push('el PR no está abierto en GitHub');
+    if (status.draft) reasons.push('el PR sigue en borrador');
+    if (status.mergeableState === 'dirty') reasons.push('hay conflictos con la rama destino');
+    else if (status.mergeableState === 'behind') reasons.push('la rama está desactualizada respecto al destino');
+    else if (status.mergeableState === 'blocked') reasons.push('bloqueado por revisiones o checks requeridos pendientes en GitHub');
+    else if (status.mergeableState === 'unstable') reasons.push('hay checks no obligatorios fallando');
+    else if (status.mergeableState === 'unknown' && status.state === 'open') {
+      pending = true;
+      reasons.push('GitHub todavía está calculando si el PR se puede mergear: intenta de nuevo en unos segundos');
+    }
+
+    if (!ctx.hasAnalysis) {
+      reasons.push('no hay un análisis de DevSentinel asociado a este PR');
+    } else if (!ctx.run || ctx.run.status !== 'completed') {
+      reasons.push('el análisis de DevSentinel todavía no terminó');
+    } else if (ctx.run.gate_decision === 'no_apto') {
+      reasons.push('el análisis de DevSentinel marcó el commit como NO APTO');
+    }
+
+    return {
+      canMerge: reasons.length === 0,
+      reasons,
+      pending,
+      summary: {
+        number: pr.github_pr_number,
+        title: pr.title,
+        url: `https://github.com/${owner}/${repo}/pull/${pr.github_pr_number}`,
+        head: pr.source_branch,
+        base: pr.target_branch,
+        verdict: ctx.run?.gate_decision ?? null,
+        score: ctx.run?.quality_score ?? null,
+        risk: ctx.run?.risk_level ?? null,
+        checks: status.checks.map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion })),
+      },
+    };
   }
 
   async merge(orgId: string, pullRequestId: string): Promise<{ merged: boolean }> {
@@ -209,13 +265,26 @@ export class PullRequestsService {
       throw new BadRequestException(`no se puede mergear: ${reasons.join('; ')}`);
     }
 
-    return withTenant(orgId, async (client) => {
-      const { installationId, owner, repo, pr } = await this.loadGithubRef(client, pullRequestId);
-      const adapter = await buildGithubAdapterForInstallation(client, installationId);
-      const result = await adapter.mergePullRequest({ installationId, owner, repo, pullNumber: pr.github_pr_number });
-      await client.query(`UPDATE pull_requests SET status = 'merged', merged_at = now() WHERE id = $1`, [pullRequestId]);
-      return result;
+    const { adapter, installationId, owner, repo, pr } = await withTenant(orgId, async (client) => {
+      const ref = await this.loadGithubRef(client, pullRequestId);
+      return { ...ref, adapter: await buildGithubAdapterForInstallation(client, ref.installationId) };
     });
+    let result: { merged: boolean };
+    try {
+      result = await adapter.mergePullRequest({ installationId, owner, repo, pullNumber: pr.github_pr_number });
+    } catch (err) {
+      // GitHub puede rechazar el merge aunque la validación previa pasara (otro merge en paralelo, regla de rama protegida,
+      // PR modificado justo antes): se explica en vez de devolver un error interno.
+      const status = (err as { status?: number }).status;
+      if (status === 405 || status === 409 || status === 422) {
+        throw new BadRequestException(`GitHub rechazó el merge: ${(err as Error).message}`);
+      }
+      throw err;
+    }
+    if (result.merged) {
+      await withTenant(orgId, (client) => client.query(`UPDATE pull_requests SET status = 'merged', merged_at = now() WHERE id = $1`, [pullRequestId]));
+    }
+    return result;
   }
 
   private async loadWithOwnership(client: PoolClient, pullRequestId: string): Promise<any | null> {

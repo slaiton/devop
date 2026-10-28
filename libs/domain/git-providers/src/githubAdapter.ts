@@ -7,6 +7,8 @@ import type {
   InstallationDetails,
   PullRequestContextInfo,
   ReadRemoteFileParams,
+  RemoteCodeMatch,
+  SearchRemoteCodeParams,
   RemoteFileResult,
   CheckRunParams,
   CommitRef,
@@ -473,6 +475,17 @@ export class GithubAdapter implements GitProviderPort {
       if (status === 404 || status === 403) return null;
       throw err;
     }
+  }
+
+  /** Busca texto en el código de UN repo (API de búsqueda de código de GitHub): solo indexa la rama por defecto y tiene un límite
+   * de unas 10 búsquedas por minuto, así que sirve para ubicar archivos y luego leerlos con `readRemoteFile`, no para recorrer el repo. */
+  async searchRemoteCode(params: SearchRemoteCodeParams): Promise<RemoteCodeMatch[]> {
+    const client = this.getInstallationClient(params.installationId);
+    const { data } = await client.search.code({
+      q: `${params.query} repo:${params.owner}/${params.repo}`,
+      per_page: Math.min(30, Math.max(1, params.limit ?? 15)),
+    });
+    return data.items.map((item) => ({ path: item.path, url: item.html_url }));
   }
 
   /** Configuración de la App en GitHub (JWT de App): eventos suscritos, permisos que declara y

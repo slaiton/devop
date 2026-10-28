@@ -4,9 +4,6 @@ import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
 export interface SystemSettingsInitial {
-  llmProviderBaseUrl: string | null;
-  llmModel: string | null;
-  llmProviderApiKeySet: boolean;
   smtpHost: string | null;
   smtpPort: number | null;
   smtpUser: string | null;
@@ -26,9 +23,6 @@ export function SystemSettingsForm({
   redirectOnSuccess?: string;
 }) {
   const router = useRouter();
-  const [llmProviderBaseUrl, setLlmProviderBaseUrl] = useState(initial.llmProviderBaseUrl ?? '');
-  const [llmModel, setLlmModel] = useState(initial.llmModel ?? '');
-  const [llmProviderApiKey, setLlmProviderApiKey] = useState('');
   const [smtpHost, setSmtpHost] = useState(initial.smtpHost ?? '');
   const [smtpPort, setSmtpPort] = useState(initial.smtpPort?.toString() ?? '587');
   const [smtpUser, setSmtpUser] = useState(initial.smtpUser ?? '');
@@ -48,9 +42,6 @@ export function SystemSettingsForm({
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          llmProviderBaseUrl,
-          llmModel,
-          llmProviderApiKey: llmProviderApiKey || undefined,
           smtpHost,
           smtpPort: smtpPort ? Number(smtpPort) : undefined,
           smtpUser,
@@ -63,7 +54,6 @@ export function SystemSettingsForm({
         throw new Error(body.message ?? `error ${res.status}`);
       }
       setSaved(true);
-      setLlmProviderApiKey('');
       setSmtpPassword('');
       if (redirectOnSuccess) {
         router.push(redirectOnSuccess);
@@ -79,25 +69,6 @@ export function SystemSettingsForm({
 
   return (
     <form onSubmit={handleSubmit}>
-      <h2>Proveedor LLM</h2>
-      <p>
-        <label>Base URL: <input value={llmProviderBaseUrl} onChange={(e) => setLlmProviderBaseUrl(e.target.value)} placeholder="https://api.deepseek.com/v1" /></label>
-      </p>
-      <p>
-        <label>Modelo: <input value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder="deepseek-chat" /></label>
-      </p>
-      <p>
-        <label>
-          API key {initial.llmProviderApiKeySet && <span className="status-ok">(configurada)</span>}:
-          <input
-            type="password"
-            value={llmProviderApiKey}
-            onChange={(e) => setLlmProviderApiKey(e.target.value)}
-            placeholder={initial.llmProviderApiKeySet ? '•••••••• (dejar vacío para no cambiar)' : ''}
-          />
-        </label>
-      </p>
-
       <h2>SMTP (opcional, para notificar por correo)</h2>
       <p>
         <label>Host: <input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} /></label>

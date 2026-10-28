@@ -4,16 +4,16 @@ import type { ContextFile, GitProviderPort } from '@devsentinel/git-providers';
 import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import {
   AgenticReviewUnsupportedError,
-  OpenAiCompatibleLlmAdapter,
-  embedLocally,
   type AgenticReviewOptions,
   type AgenticReviewStats,
+  type LlmPort,
+  type LlmRouter,
   type ProjectProfile,
   type ReviewDiffInput,
   type ReviewResult,
   type ToolTraceEntry,
 } from '@devsentinel/llm-port';
-import { getSystemSettings, sendEmail } from '@devsentinel/settings';
+import { sendEmail } from '@devsentinel/settings';
 import type { ReviewJobPayload } from '@devsentinel/event-contracts';
 import { buildPullRequestContent } from '@devsentinel/pr-content';
 import { upsertFindingsIssue } from '@devsentinel/issue-content';
@@ -21,6 +21,7 @@ import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
 import { RagContextService } from './ragContext.service';
 import { readLocalContextFiles } from './contextFiles';
+import { createLlmRouter } from '../../common/llmRouter.factory';
 import { truncateDiff } from './diffUtils';
 import { ReviewToolbox, buildFileHistorySummary, buildSymbolUsages, formatPullRequests } from './reviewToolbox';
 
@@ -57,6 +58,9 @@ const DEEP_MAX_DIFF_CHARS = 100_000;
 
 type GateDecision = 'apto' | 'requiere_revision' | 'no_apto';
 
+/** Un hallazgo con pregunta no bloquea: es una duda que se resuelve conversando con el desarrollador. */
+const isQuestion = (f: { question?: string | null }): boolean => typeof f.question === 'string' && f.question.trim().length > 0;
+
 const GATE_LABEL: Record<GateDecision, string> = {
   apto: '✓ APTO',
   requiere_revision: '⚠ REQUIERE REVISIÓN',
@@ -85,17 +89,11 @@ export class ReviewService {
   private async buildClients(
     organizationId: string,
     installationId: number,
-  ): Promise<{ gitAdapter: GitProviderPort; llm: OpenAiCompatibleLlmAdapter }> {
-    const [gitAdapter, settings] = await Promise.all([
+  ): Promise<{ gitAdapter: GitProviderPort; llm: LlmRouter }> {
+    const [gitAdapter, llm] = await Promise.all([
       withTenant(organizationId, (client) => buildGithubAdapterForInstallation(client, installationId)),
-      getSystemSettings(getPool()),
+      createLlmRouter(),
     ]);
-    const llm = new OpenAiCompatibleLlmAdapter(
-      settings?.llmModel ?? '',
-      settings?.llmProviderBaseUrl ?? '',
-      settings?.llmProviderApiKey ?? '',
-      embedLocally,
-    );
     return { gitAdapter, llm };
   }
 
@@ -191,7 +189,7 @@ export class ReviewService {
 
       const gateDecision = this.evaluateGateDecision(config, result);
 
-      await this.persistResult(payload, result, gateDecision, analyzedFiles, analysis);
+      await this.persistResult(payload, result, gateDecision, analyzedFiles, analysis, llm.reviewUsage());
       await this.publishToGithub(gitAdapter, payload, result, gateDecision);
       await this.syncFindingsIssue(gitAdapter, payload, result, gateDecision);
       await this.maybeAutoCreatePullRequest(gitAdapter, payload, result, gateDecision);
@@ -217,7 +215,7 @@ export class ReviewService {
    * modo estándar y se deja constancia del motivo en la revisión. */
   private async runLlmReview(params: {
     deep: boolean;
-    llm: OpenAiCompatibleLlmAdapter;
+    llm: LlmPort;
     gitAdapter: GitProviderPort;
     payload: ReviewJobPayload;
     reviewInput: ReviewDiffInput;
@@ -353,7 +351,7 @@ export class ReviewService {
    * (`auto_generated_from`) y nunca pisa uno que alguien haya configurado a mano. */
   private async bootstrapProjectProfile(
     gitAdapter: GitProviderPort,
-    llm: OpenAiCompatibleLlmAdapter,
+    llm: LlmPort,
     payload: ReviewJobPayload,
     localContextFiles: ContextFile[],
   ): Promise<ProjectProfile | undefined> {
@@ -419,25 +417,31 @@ export class ReviewService {
     }
   }
 
+  /** Veredicto determinista. Los hallazgos con pregunta ("question") NO cuentan para el bloqueo: son dudas que la IA no pudo
+   * comprobar y se resuelven preguntando al desarrollador. Mientras haya alguna, el commit no se aprueba (REQUIERE_REVISIÓN),
+   * pero tampoco queda NO APTO por culpa de una duda: solo bloquean los hallazgos confirmados. */
   private evaluateGateDecision(config: QualityGateConfig, result: ReviewResult): GateDecision {
-    const hasHardBlockingFinding = result.findings.some(
-      (f) => f.severity === 'critical' && HARD_BLOCK_CATEGORIES.has(f.category),
-    );
-    if (hasHardBlockingFinding) return 'no_apto';
+    const confirmed = result.findings.filter((f) => !isQuestion(f));
+    const hasQuestions = confirmed.length !== result.findings.length;
+    const confirmedSerious = confirmed.some((f) => f.severity === 'critical' || f.severity === 'high');
 
-    const hasSecretFinding = result.findings.some(
-      (f) => f.category === 'security' && /secret|credential|token/i.test(f.title),
-    );
+    if (confirmed.some((f) => f.severity === 'critical' && HARD_BLOCK_CATEGORIES.has(f.category))) return 'no_apto';
+
+    const hasSecretFinding = confirmed.some((f) => f.category === 'security' && /secret|credential|token/i.test(f.title));
     if (config.block_on_secret && hasSecretFinding) return 'no_apto';
 
     const blockingRiskLevels = config.block_on_risk_level === 'medium' ? ['medium', 'high'] : ['high'];
-    if (blockingRiskLevels.includes(result.risk_level)) return 'no_apto';
+    if (blockingRiskLevels.includes(result.risk_level)) return hasQuestions && !confirmedSerious ? 'requiere_revision' : 'no_apto';
 
     const llmVerdict = normalizeVerdict(result.resultado);
-    if (llmVerdict) return llmVerdict;
+    if (llmVerdict) {
+      if (hasQuestions && llmVerdict === 'no_apto' && !confirmedSerious) return 'requiere_revision';
+      if (hasQuestions && llmVerdict === 'apto') return 'requiere_revision';
+      return llmVerdict;
+    }
 
     // Red de seguridad si el LLM no devolvió un veredicto válido.
-    if (result.risk_level === 'high') return 'requiere_revision';
+    if (hasQuestions || result.risk_level === 'high') return 'requiere_revision';
     if (result.risk_level === 'medium' && result.quality_score < 70) return 'requiere_revision';
     return 'apto';
   }
@@ -448,6 +452,7 @@ export class ReviewService {
     gateDecision: GateDecision,
     analyzedFiles: string[],
     analysis: AnalysisRecord,
+    usage?: { provider: string | null; model: string | null; failovers: unknown[] },
   ): Promise<void> {
     await withTenant(payload.organizationId, async (client) => {
       // Idempotente ante reintentos: si un intento anterior llegó a guardar hallazgos
@@ -459,7 +464,8 @@ export class ReviewService {
              gate_decision = $4, llm_verdict = $5, final_justification = $6,
              commit_history_comparison = $7, recommendations = $8, recommended_tests = $9,
              analyzed_files = $10, completed_at = now(),
-             analysis_mode = $12, analysis_note = $13, analysis_trace = $14, analysis_stats = $15
+             analysis_mode = $12, analysis_note = $13, analysis_trace = $14, analysis_stats = $15,
+             llm_provider = $16, llm_model = $17, llm_failovers = $18
          WHERE id = $11`,
         [
           result.quality_score,
@@ -477,20 +483,28 @@ export class ReviewService {
           analysis.note,
           analysis.trace ? JSON.stringify(analysis.trace) : null,
           analysis.stats ? JSON.stringify(analysis.stats) : null,
+          usage?.provider ?? null,
+          usage?.model ?? null,
+          usage && usage.failovers.length > 0 ? JSON.stringify(usage.failovers) : null,
         ],
       );
 
       for (const finding of result.findings) {
-        const blocking = gateDecision === 'no_apto' && (finding.severity === 'critical' || finding.severity === 'high');
-        await client.query(
+        const question = isQuestion(finding) ? finding.question!.trim() : null;
+        // Una duda no puede ser "crítica": la severidad definitiva se fija cuando se confirme.
+        const severity = question && finding.severity === 'critical' ? 'high' : finding.severity;
+        const blocking = !question && gateDecision === 'no_apto' && (severity === 'critical' || severity === 'high');
+        const { rows: inserted } = await client.query(
           `INSERT INTO findings
-             (organization_id, review_run_id, category, severity, file_path, line_start, line_end, title, explanation, suggested_fix, confidence, rule_source, blocking, violated_rule)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'llm', $12, $13)`,
+             (organization_id, review_run_id, category, severity, file_path, line_start, line_end, title, explanation, suggested_fix, confidence, rule_source, blocking, violated_rule,
+              status, question, verify_with, clarification_round)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'llm', $12, $13, $14, $15, $16, $17)
+           RETURNING id`,
           [
             payload.organizationId,
             payload.reviewRunId,
             finding.category,
-            finding.severity,
+            severity,
             finding.file_path,
             finding.line_start ?? null,
             finding.line_end ?? null,
@@ -500,8 +514,18 @@ export class ReviewService {
             finding.confidence,
             blocking,
             finding.violated_rule ?? null,
+            question ? 'awaiting_clarification' : 'open',
+            question,
+            question && finding.verify_with ? JSON.stringify(finding.verify_with) : null,
+            question ? 1 : 0,
           ],
         );
+        if (question) {
+          await client.query(
+            `INSERT INTO finding_clarifications (organization_id, finding_id, role, body, source) VALUES ($1, $2, 'ai', $3, 'ai')`,
+            [payload.organizationId, inserted[0].id, question],
+          );
+        }
       }
     });
   }
@@ -523,7 +547,9 @@ export class ReviewService {
           commitSha: payload.commitSha,
           filePath: finding.file_path,
           line: finding.line_start,
-          body: `**[${finding.severity.toUpperCase()}] ${finding.title}**${finding.violated_rule ? `\n_Regla incumplida: ${finding.violated_rule}_` : ''}\n\n${finding.explanation}`,
+          body: isQuestion(finding)
+            ? `❓ **Pregunta de DevSentinel AI — ${finding.title}**\n\n${finding.question!.trim()}\n\n_No bloquea todavía: responde en el issue de seguimiento o desde DevSentinel y la IA lo reevalúa._`
+            : `**[${finding.severity.toUpperCase()}] ${finding.title}**${finding.violated_rule ? `\n_Regla incumplida: ${finding.violated_rule}_` : ''}\n\n${finding.explanation}`,
         });
       }
 
@@ -575,10 +601,14 @@ export class ReviewService {
   ): Promise<void> {
     try {
       await withTenant(payload.organizationId, async (client) => {
-        const { rows } = await client.query('SELECT pull_request_id FROM review_runs WHERE id = $1', [
-          payload.reviewRunId,
-        ]);
+        const { rows } = await client.query(
+          `SELECT rr.pull_request_id, d.github_login
+           FROM review_runs rr LEFT JOIN developers d ON d.id = rr.developer_id
+           WHERE rr.id = $1`,
+          [payload.reviewRunId],
+        );
         const pullRequestId: string | null = rows[0]?.pull_request_id ?? null;
+        const mentionLogin: string | null = rows[0]?.github_login ?? null;
 
         await upsertFindingsIssue(client, gitAdapter, {
           organizationId: payload.organizationId,
@@ -599,6 +629,7 @@ export class ReviewService {
             summary: result.resumen_ejecutivo,
           },
           trigger: 'push',
+          mentionLogin,
         });
       });
     } catch (err) {

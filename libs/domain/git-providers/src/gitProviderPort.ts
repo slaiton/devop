@@ -209,6 +209,20 @@ export interface ReadRemoteFileParams {
   maxChars: number;
 }
 
+export interface SearchRemoteCodeParams {
+  installationId: number;
+  owner: string;
+  repo: string;
+  /** Texto a buscar (sin calificadores como repo:/org:/user:, los pone el adaptador). */
+  query: string;
+  limit?: number;
+}
+
+export interface RemoteCodeMatch {
+  path: string;
+  url: string;
+}
+
 export interface WebhookDeliverySummary {
   id: number;
   guid: string;
@@ -261,6 +275,7 @@ export interface GitProviderPort {
   collectProjectContext(params: ReadContextFilesParams): Promise<ContextFile[]>;
   getPullRequestContext(params: CommitRef & { pullNumber?: number }): Promise<PullRequestContextInfo[]>;
   readRemoteFile(params: ReadRemoteFileParams): Promise<RemoteFileResult | null>;
+  searchRemoteCode(params: SearchRemoteCodeParams): Promise<RemoteCodeMatch[]>;
   getAppOverview(): Promise<AppOverview>;
   getInstallationDetails(installationId: number): Promise<InstallationDetails>;
 }

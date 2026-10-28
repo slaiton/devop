@@ -40,3 +40,16 @@ export interface ProjectContextJobPayload {
   repositoryId: string;
   mode: 'fill' | 'replace';
 }
+
+export const CLARIFICATION_QUEUE_NAME = 'clarification-jobs';
+
+/** Una pregunta de la IA sobre un hallazgo recibió respuesta (o un admin decidió a mano): hay que re-evaluarla. */
+export interface ClarificationJobPayload {
+  organizationId: string;
+  repositoryId: string;
+  reviewRunId: string;
+  findingId: string;
+  /** 'reply' = la IA evalúa el hilo; 'manual' = un admin confirma o descarta el hallazgo sin pasar por la IA. */
+  kind: 'reply' | 'manual';
+  manual?: { decision: 'confirm' | 'dismiss'; userId: string; comment?: string };
+}
