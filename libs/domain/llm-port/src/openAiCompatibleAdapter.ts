@@ -46,17 +46,19 @@ function truncate(text: string, max = 500): string {
 export class OpenAiCompatibleLlmAdapter implements LlmPort {
   private readonly client: OpenAI;
   private readonly temperature: number | null;
+  private readonly jsonObjectFormat: boolean;
 
   constructor(
     private readonly model: string,
     baseURL: string,
     apiKey: string,
     private readonly embeddingFn: (text: string) => Promise<number[]>,
-    options: { temperature?: number | null } = {},
+    options: { temperature?: number | null; jsonObjectFormat?: boolean } = {},
   ) {
     this.client = new OpenAI({ baseURL, apiKey });
     // null = no enviar el parámetro (los modelos de razonamiento de OpenAI solo aceptan el valor por defecto)
     this.temperature = options.temperature === undefined ? 0.1 : options.temperature;
+    this.jsonObjectFormat = options.jsonObjectFormat ?? true;
   }
 
   async reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> {
@@ -275,7 +277,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       completion = await this.client.chat.completions.create({
         model: this.model,
         messages,
-        response_format: { type: 'json_object' },
+        ...(this.jsonObjectFormat ? { response_format: { type: 'json_object' as const } } : {}),
         ...(this.temperature === null ? {} : { temperature: this.temperature }),
       });
     } catch (err) {

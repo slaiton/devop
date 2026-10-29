@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from 'react';
 
-export type AgentKind = 'openai' | 'deepseek' | 'xai' | 'custom';
+export type AgentKind = 'openai' | 'deepseek' | 'xai' | 'bedrock' | 'custom';
 export type RoutingMode = 'failover' | 'round_robin';
 
 export interface AgentProvider {
@@ -57,6 +57,14 @@ const PRESETS: Preset[] = [
     baseUrl: 'https://api.x.ai/v1',
     models: ['grok-4', 'grok-3'],
     hint: 'Crea la API key en console.x.ai.',
+  },
+  {
+    kind: 'bedrock',
+    label: 'Amazon Bedrock',
+    name: 'GPT-5.6 Sol (Bedrock)',
+    baseUrl: 'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1',
+    models: ['global.openai.gpt-5.6-sol', 'us.openai.gpt-5.6-sol'],
+    hint: 'Pega la clave API de Bedrock (consola de Bedrock → API keys) y cambia us-east-1 en la URL por tu región. En bedrock-runtime el modelo se llama con un perfil de inferencia: global.… (más barato, puede enrutar a cualquier región) o us.… (solo EE. UU.). La identidad IAM de la clave necesita bedrock:InvokeModel sobre el perfil y sobre project/default.',
   },
   {
     kind: 'custom',

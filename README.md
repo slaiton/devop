@@ -167,6 +167,27 @@ arma el perfil con la IA (si ya lo configuraste a mano, solo completa los campos
 `GITHUB_API_URL` y `GITHUB_GIT_URL` (opcionales) apuntan la API y los clones a otro servidor
 compatible, p. ej. GitHub Enterprise Server.
 
+### Amazon Bedrock (GPT-5.6 Sol)
+
+Bedrock se agrega como un agente más en `/settings` → **Agregar Amazon Bedrock**. Usa la API compatible con
+OpenAI de `bedrock-runtime` con una **clave API de Bedrock**; no necesita variables de entorno ni cambios de infraestructura.
+
+**En AWS**
+1. Consola de Bedrock → habilitar el acceso a *GPT-5.6 Sol* (puede pedir aceptar los términos de Marketplace).
+2. Crear una identidad IAM dedicada (usuario) con permiso `bedrock:InvokeModel` **solo** sobre
+   `arn:aws:bedrock:<región>:<cuenta>:inference-profile/global.openai.gpt-5.6-sol` (y el perfil `us.…` si lo usas) **y** sobre
+   `arn:aws:bedrock:<región>:<cuenta>:project/default`. En Sol, un perfil global enruta a cualquier región; `us.…` se queda en EE. UU.
+3. Bedrock → API keys → crear una clave **de larga duración con vencimiento** para esa identidad.
+4. Service Quotas: revisar los tokens por minuto de Sol (cada token de salida consume 10) y crear una alerta en AWS Budgets.
+
+**En DevSentinel**: URL `https://bedrock-runtime.<región>.amazonaws.com/openai/v1`, modelo `global.openai.gpt-5.6-sol`
+(o `us.openai.gpt-5.6-sol`) y la clave (se guarda cifrada). El botón *Probar* confirma la conexión. Para comprobar de antemano qué
+acepta el modelo en tu cuenta (salida estructurada, herramientas, tokens de uso) hay una sonda:
+`node apps/worker/test/bedrock-probe.js` (ver su encabezado).
+
+Los agentes son globales: si Sol es el único agente activo, **todos** los repos se analizan con Sol (unos 4 USD por millón de tokens
+de entrada y 20 USD por millón de salida). El agente Bedrock no envía `temperature` ni `response_format: json_object`.
+
 ### Análisis estándar y profundo
 
 Cada repositorio tiene, en **Configuración**, su **profundidad del análisis**:

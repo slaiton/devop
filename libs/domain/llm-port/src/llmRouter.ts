@@ -229,6 +229,8 @@ export interface ProviderConfigLike {
 
 /** Los modelos de razonamiento de OpenAI (o1/o3/o4, gpt-5…) solo aceptan la temperatura por defecto. */
 export function temperatureFor(kind: string, model: string): number | null {
+  // En Bedrock el id lleva prefijos (`global.openai.gpt-5.6-sol`, `us.openai.…`): son modelos de razonamiento.
+  if (kind === 'bedrock') return null;
   return kind === 'openai' && /^(o\d|gpt-5)/i.test(model.trim()) ? null : 0.1;
 }
 
@@ -240,6 +242,9 @@ export function buildRoutedProvider(config: ProviderConfigLike): RoutedProvider 
     cooldownKey: `${config.id}:${createHash('sha1').update(`${config.baseUrl}|${config.model}|${config.apiKey ?? ''}`).digest('hex').slice(0, 10)}`,
     llm: new OpenAiCompatibleLlmAdapter(config.model, config.baseUrl, config.apiKey ?? '', embedLocally, {
       temperature: temperatureFor(config.kind, config.model),
+      // La documentación de Bedrock solo describe `json_schema` para la salida estructurada: no se envía `json_object`;
+      // el prompt ya exige JSON y la respuesta se valida con el esquema (con un reintento si no cumple).
+      jsonObjectFormat: config.kind !== 'bedrock',
     }),
   };
 }

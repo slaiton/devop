@@ -148,6 +148,12 @@ const listen = (s) => new Promise((r) => s.server.listen(0, '127.0.0.1', () => {
   await router([cfg(B, 'b', 'openai', 'gpt-4.1')]).reviewDiff(input);
   check('un modelo de razonamiento de OpenAI NO envía temperature; gpt-4.1 sí', !('temperature' in A.requests[0].body) && B.requests[0].body.temperature === 0.1 && A.requests[0].body.response_format?.type === 'json_object');
 
+  // Amazon Bedrock (GPT-5.6 Sol): ni temperature ni response_format json_object (solo json_schema está documentado)
+  check('temperatureFor: bedrock nunca envía temperatura, sea cual sea el id (global./us./openai.)', ['global.openai.gpt-5.6-sol', 'us.openai.gpt-5.6-sol', 'openai.gpt-5.6-sol'].every((m) => temperatureFor('bedrock', m) === null));
+  reset();
+  await router([cfg(A, 'a', 'bedrock', 'global.openai.gpt-5.6-sol')]).reviewDiff(input);
+  check('un agente bedrock envía el id del perfil tal cual, sin temperature ni response_format', A.requests[0].body.model === 'global.openai.gpt-5.6-sol' && !('temperature' in A.requests[0].body) && !('response_format' in A.requests[0].body) && A.requests[0].auth === 'Bearer sk-A', JSON.stringify(Object.keys(A.requests[0].body)));
+
   // ================================================================== 2) createLlmRouter con la base real
   const owner = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL || process.env.DATABASE_URL });
   const q = async (sql, params) => (await owner.query(sql, params)).rows;

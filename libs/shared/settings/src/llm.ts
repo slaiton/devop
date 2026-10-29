@@ -1,8 +1,9 @@
 import type { Pool } from 'pg';
 import { decrypt } from './encryption';
 
-/** Tipos de agente. `custom` es cualquier servicio compatible con la API de OpenAI. */
-export const LLM_PROVIDER_KINDS = ['openai', 'deepseek', 'xai', 'custom'] as const;
+/** Tipos de agente. `bedrock` son los modelos de OpenAI servidos por Amazon Bedrock; `custom` es cualquier servicio
+ * compatible con la API de OpenAI. */
+export const LLM_PROVIDER_KINDS = ['openai', 'deepseek', 'xai', 'bedrock', 'custom'] as const;
 export type LlmProviderKind = (typeof LLM_PROVIDER_KINDS)[number];
 
 /** failover = el primero activo y los demás de respaldo; round_robin = se intercalan por turnos. */
