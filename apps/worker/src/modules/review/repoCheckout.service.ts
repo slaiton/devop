@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { mkdtemp, rm } from 'fs/promises';
+import { chmod, mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
@@ -30,6 +30,10 @@ export class RepoCheckoutService {
   async withCheckout<T>(params: CheckoutParams, fn: (checkoutPath: string) => Promise<T>): Promise<T> {
     const checkoutPath = await mkdtemp(join(WORKSPACE_ROOT, 'job-'));
     try {
+      // mkdtemp crea el directorio en 0700 (solo root). Los escáneres corren como usuario sin privilegios (65534) y, con 0700, ni siquiera
+      // pueden entrar: todos fallaban con "no ve el repositorio clonado". Lectura y paso para todos; escribir sigue siendo solo del worker
+      // (los escáneres lo montan en solo lectura).
+      await chmod(checkoutPath, 0o755);
       const base = gitBaseUrl();
       const plainUrl = `${base}/${params.owner}/${params.repo}.git`;
       const authUrl = base.startsWith('http')
