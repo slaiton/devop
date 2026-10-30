@@ -175,13 +175,13 @@ OpenAI de `bedrock-runtime` con una **clave API de Bedrock**; no necesita variab
 **En AWS**
 1. Consola de Bedrock → habilitar el acceso a *GPT-5.6 Sol* (puede pedir aceptar los términos de Marketplace).
 2. Crear una identidad IAM dedicada (usuario) con permiso `bedrock:InvokeModel` **solo** sobre
-   `arn:aws:bedrock:<región>:<cuenta>:inference-profile/global.openai.gpt-5.6-sol` (y el perfil `us.…` si lo usas) **y** sobre
-   `arn:aws:bedrock:<región>:<cuenta>:project/default`. En Sol, un perfil global enruta a cualquier región; `us.…` se queda en EE. UU.
+   `arn:aws:bedrock:<región>:<cuenta>:inference-profile/us.openai.gpt-5.6-sol` y `…/us.openai.gpt-5.6-luna` (los perfiles `global.…` enrutan a
+   cualquier región; `us.…` se queda en EE. UU.) **y** sobre `arn:aws:bedrock:<región>:<cuenta>:project/default`.
 3. Bedrock → API keys → crear una clave **de larga duración con vencimiento** para esa identidad.
 4. Service Quotas: revisar los tokens por minuto de Sol (cada token de salida consume 10) y crear una alerta en AWS Budgets.
 
-**En DevSentinel**: URL `https://bedrock-runtime.<región>.amazonaws.com/openai/v1`, modelo `global.openai.gpt-5.6-sol`
-(o `us.openai.gpt-5.6-sol`) y la clave (se guarda cifrada). El botón *Probar* confirma la conexión. Para comprobar de antemano qué
+**En DevSentinel**: URL `https://bedrock-runtime.<región>.amazonaws.com/openai/v1`, modelo `us.openai.gpt-5.6-luna` o
+`us.openai.gpt-5.6-sol` (o su versión `global.`) y la clave (se guarda cifrada). El botón *Probar* confirma la conexión. Para comprobar de antemano qué
 acepta el modelo en tu cuenta (salida estructurada, herramientas, tokens de uso) hay una sonda:
 `node apps/worker/test/bedrock-probe.js` (ver su encabezado).
 
@@ -225,6 +225,40 @@ ESLint con plugins, PHPUnit…) **no** están incluidas: requerirían un entorno
 
 Las primeras ejecuciones descargan las imágenes (Semgrep pesa ~1,5 GB); para precargarlas en el servidor:
 `docker pull <imagen>@sha256:…` con los digests de `scanners.ts`.
+
+### Auditoría por capas — capa 2 (triaje), modelo por capa y presupuesto
+
+**Modelo por capa.** En **Configuración → Agentes de IA**, cada agente tiene un *rol*: **General** (la revisión de siempre, reconsideraciones,
+aclaraciones y respaldo), **Capa 2 · triaje** o **Capa 3 · auditoría avanzada**. Un agente con rol de capa queda fuera de la rotación
+general; la capa solo usa sus propios agentes (con respaldo entre ellos) y **nunca cae a un agente general**: si no hay ninguno asignado,
+esa capa no corre. Si TODOS los agentes están asignados a capas, las tareas generales usan cualquier agente activo para no dejar de funcionar.
+Configuración recomendada: Sol como *General* (también atiende las escaladas) y Luna como *Capa 2*.
+
+**Capa 2** (por repositorio, requiere la capa 1): un modelo barato (p. ej. GPT-5.6 Luna en Bedrock) recibe datos estructurados —no el
+repositorio—: el diff con los secretos **redactados**, los hallazgos de los escáneres con su contexto de código (±12 líneas), los usos de los
+símbolos que cambian, el perfil del proyecto y el tipo de cambio (auth, iam, ci_cd, migration, payments, infra, dependencies, calculado por la
+aplicación). Devuelve un JSON con **esquema estricto** que además se valida en la aplicación. Qué hace con él:
+- Agrupa hallazgos, prioriza y puede marcar **falsos positivos** de patrones heurísticos con un motivo. **Nunca** descarta un secreto ni una
+  coincidencia determinista confirmada (Gitleaks, Trivy, Checkov, Hadolint): ese intento se ignora, queda registrado y cuenta como conflicto.
+- Añade hallazgos que los escáneres no ven (lógica, autorización, validación, transacciones, concurrencia, migraciones…). Cada uno debe
+  traer una **cita textual** del código y un archivo/línea reales: la aplicación los busca en el repositorio y **descarta** (con el motivo) los que
+  no encuentra. Un hallazgo sin comprobar no puede ser grave (baja a *medium*).
+- Si no hay motivo para escalar, **su revisión es la del commit** y no se paga el revisor general. Si falla, no hay agente asignado o no hay
+  presupuesto, se revisa con el agente general y la auditoría queda **incompleta** (nunca APTO).
+- **Escalamiento a la auditoría avanzada**, por reglas reproducibles y no solo por la opinión del modelo: cambios de autenticación, IAM, CI/CD,
+  migraciones o pagos; recomendación del modelo; hallazgo grave confirmado *nuevo*; riesgo alto; o un conflicto con un escáner
+  (`AUDIT_ESCALATION_TAGS` cambia los tipos de cambio). Hoy la escalada la atiende el revisor general (Sol), informado del triaje; la capa 3
+  dedicada viene después.
+- Nada de lo que diga puede aprobar o desbloquear: la política determinista de la capa 1 sigue mandando.
+
+**Presupuesto de IA** (Configuración → Presupuesto de IA): tope mensual (50 USD por defecto), tope por auditoría (1 USD) y qué hacer al
+agotarlo — *revisión parcial* (la capa se omite, auditoría incompleta, nunca APTO) o *bloquear* (además NO APTO). Antes de cada llamada de
+la capa 2 se estima una cota superior de su costo y se compara con lo gastado en el mes y en esa auditoría. Cada llamada a un modelo queda en
+`llm_invocations` (tokens, tokens de razonamiento y de caché, latencia, errores; sin prompts) con su costo según la **tarifa vigente de
+`model_prices`** — datos editables, no código; los valores iniciales salen de las fichas de modelo de Bedrock (verifícalos contra la página de
+precios y agrega una fila cuando cambien; el contexto de más de 272K tokens se cobra a otra tarifa). Un modelo sin tarifa corre igual pero no
+se puede contabilizar ni limitar (se avisa). La página de cada commit muestra el consumo por capa y su total. Variables opcionales:
+`AUDIT_L2_REASONING` (esfuerzo de razonamiento, `low`), `AUDIT_L2_MAX_OUTPUT_TOKENS` (8000), `AUDIT_L2_MAX_DIFF_CHARS` (60000).
 
 ### Análisis estándar y profundo
 

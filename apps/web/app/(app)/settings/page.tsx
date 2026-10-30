@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
 import { getSession } from '../../session';
 import { AiAgentsPanel, type AgentsConfig } from '../../components/AiAgentsPanel';
+import { AuditBudgetPanel, type AuditBudgetData } from '../../components/AuditBudgetPanel';
 import { SystemSettingsForm, type SystemSettingsInitial } from '../../SystemSettingsForm';
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -19,9 +20,10 @@ export default async function SettingsPage() {
     return <p>No autorizado.</p>;
   }
 
-  const [settings, agents] = await Promise.all([
+  const [settings, agents, budget] = await Promise.all([
     fetchJson<SystemSettingsInitial>('/system-settings'),
     fetchJson<AgentsConfig>('/system-settings/llm'),
+    fetchJson<AuditBudgetData>('/system-settings/audit-budget'),
   ]);
 
   return (
@@ -31,6 +33,7 @@ export default async function SettingsPage() {
         Agentes de IA (con su orden de uso) y SMTP. Las GitHub Apps se gestionan aparte, desde <code>/accounts</code>.
       </p>
       <AiAgentsPanel initial={agents} />
+      <AuditBudgetPanel initial={budget} />
       <SystemSettingsForm endpoint="/api/system-settings" method="PATCH" initial={settings} />
     </>
   );

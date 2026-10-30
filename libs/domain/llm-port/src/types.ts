@@ -42,6 +42,9 @@ export const findingSchema = z.object({
     .object({ repo: z.string().nullable().optional(), paths: z.array(z.string()).nullable().optional() })
     .nullable()
     .optional(),
+  /** Solo auditoría por capas: estado de validación y hallazgos de los escáneres a los que se refiere. */
+  validation_status: z.enum(['confirmed', 'pending_validation', 'false_positive_suspected']).nullable().optional(),
+  source_refs: z.array(z.string()).nullable().optional(),
 });
 
 export const reviewResultSchema = z.object({
@@ -55,6 +58,20 @@ export const reviewResultSchema = z.object({
   comparacion_commits_previos: z.string(),
   justificacion_final: z.string(),
 });
+
+/** Consumo de UNA llamada al modelo (para costos y presupuesto). */
+export interface LlmUsageRecord {
+  method: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  ms: number;
+  ok: boolean;
+  error?: string;
+}
 
 export type Finding = z.infer<typeof findingSchema>;
 export type ReviewResult = z.infer<typeof reviewResultSchema>;

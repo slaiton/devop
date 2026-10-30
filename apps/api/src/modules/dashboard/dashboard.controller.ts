@@ -16,6 +16,7 @@ interface UpdateRepositorySettingsBody {
   ignoredPushBranches?: string[];
   analysisDepth?: string;
   auditLayer1?: boolean;
+  auditLayer2?: boolean;
 }
 
 interface UpdateProjectProfileBody {

@@ -33,7 +33,10 @@ export class ClarificationService {
 
   async process(payload: ClarificationJobPayload): Promise<void> {
     // El agente de IA se arma antes de abrir la transacción: si no hay ninguno configurado falla rápido y se reintenta.
-    const llm = payload.kind === 'reply' ? await createLlmRouter() : null;
+    const llm =
+      payload.kind === 'reply'
+        ? await createLlmRouter({ organizationId: payload.organizationId, reviewRunId: payload.reviewRunId, repositoryId: payload.repositoryId, purpose: 'clarification' })
+        : null;
 
     await withTenant(payload.organizationId, async (client) => {
       // Bloquea la fila: si llegan dos respuestas seguidas, la segunda espera a que termine la primera y ve el resultado.

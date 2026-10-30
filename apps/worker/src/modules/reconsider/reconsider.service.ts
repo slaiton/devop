@@ -11,7 +11,7 @@ export class ReconsiderService {
   private readonly logger = new Logger(ReconsiderService.name);
 
   async process(payload: ReconsiderJobPayload): Promise<void> {
-    const llm = await createLlmRouter();
+    const llm = await createLlmRouter({ organizationId: payload.organizationId, reviewRunId: payload.reviewRunId, purpose: 'reconsider' });
 
     await withTenant(payload.organizationId, async (client) => {
       const { rows: findingRows } = await client.query('SELECT * FROM findings WHERE id = $1', [payload.findingId]);

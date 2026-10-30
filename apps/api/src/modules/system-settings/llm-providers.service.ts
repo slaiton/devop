@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { getPool } from '@devsentinel/database';
 import {
+  LLM_AUDIT_LAYERS,
   LLM_PROVIDER_KINDS,
   LLM_ROUTING_MODES,
   encrypt,
@@ -9,6 +10,7 @@ import {
   listLlmProviders,
   recordLlmProviderResult,
   setLlmRoutingMode,
+  type LlmAuditLayer,
   type LlmProviderConfig,
   type LlmProviderKind,
   type LlmRoutingMode,
@@ -23,6 +25,8 @@ export interface LlmProviderInput {
   apiKey?: string;
   clearApiKey?: boolean;
   enabled?: boolean;
+  /** null / '' / 'general' = agente general; 'layer2' | 'layer3' = atiende esa capa de la auditoría. */
+  auditLayer?: string | null;
 }
 
 const TEST_TIMEOUT_MS = 25_000;
@@ -32,6 +36,14 @@ function requireKind(kind: unknown): LlmProviderKind {
     throw new BadRequestException(`kind debe ser uno de: ${LLM_PROVIDER_KINDS.join(', ')}`);
   }
   return kind as LlmProviderKind;
+}
+
+function cleanLayer(raw: unknown): LlmAuditLayer | null {
+  if (raw === null || raw === undefined || raw === '' || raw === 'general') return null;
+  if (typeof raw !== 'string' || !(LLM_AUDIT_LAYERS as readonly string[]).includes(raw)) {
+    throw new BadRequestException(`auditLayer debe ser vacío (general) o uno de: ${LLM_AUDIT_LAYERS.join(', ')}`);
+  }
+  return raw as LlmAuditLayer;
 }
 
 function cleanBaseUrl(raw: unknown): string {
@@ -67,6 +79,7 @@ export function toMaskedProvider(p: LlmProviderConfig) {
     lastUsedAt: p.lastUsedAt,
     lastError: p.lastError,
     lastErrorAt: p.lastErrorAt,
+    auditLayer: p.auditLayer,
   };
 }
 
@@ -94,11 +107,12 @@ export class LlmProvidersService {
     const baseUrl = cleanBaseUrl(input.baseUrl);
     const model = cleanText(input.model, 'el modelo', 120);
     const apiKey = input.apiKey?.trim() || null;
+    const auditLayer = cleanLayer(input.auditLayer);
     const pool = getPool();
     await pool.query(
-      `INSERT INTO llm_providers (name, kind, base_url, model, api_key_encrypted, enabled, position)
-       VALUES ($1, $2, $3, $4, $5, $6, COALESCE((SELECT max(position) FROM llm_providers), 0) + 1)`,
-      [name, kind, baseUrl, model, apiKey ? encrypt(apiKey) : null, input.enabled ?? true],
+      `INSERT INTO llm_providers (name, kind, base_url, model, api_key_encrypted, enabled, position, audit_layer)
+       VALUES ($1, $2, $3, $4, $5, $6, COALESCE((SELECT max(position) FROM llm_providers), 0) + 1, $7)`,
+      [name, kind, baseUrl, model, apiKey ? encrypt(apiKey) : null, input.enabled ?? true, auditLayer],
     );
     return this.get();
   }
@@ -111,6 +125,7 @@ export class LlmProvidersService {
     const baseUrl = input.baseUrl !== undefined ? cleanBaseUrl(input.baseUrl) : current.baseUrl;
     const model = input.model !== undefined ? cleanText(input.model, 'el modelo', 120) : current.model;
     const enabled = input.enabled !== undefined ? Boolean(input.enabled) : current.enabled;
+    const auditLayer = input.auditLayer !== undefined ? cleanLayer(input.auditLayer) : current.auditLayer;
     let keyEncrypted: string | null | undefined; // undefined = no tocar
     if (input.clearApiKey) keyEncrypted = null;
     else if (input.apiKey && input.apiKey.trim()) keyEncrypted = encrypt(input.apiKey.trim());
@@ -119,9 +134,10 @@ export class LlmProvidersService {
       `UPDATE llm_providers
        SET name = $2, kind = $3, base_url = $4, model = $5, enabled = $6,
            api_key_encrypted = CASE WHEN $7::boolean THEN $8 ELSE api_key_encrypted END,
+           audit_layer = $9,
            updated_at = now()
        WHERE id = $1`,
-      [id, name, kind, baseUrl, model, enabled, keyEncrypted !== undefined, keyEncrypted ?? null],
+      [id, name, kind, baseUrl, model, enabled, keyEncrypted !== undefined, keyEncrypted ?? null, auditLayer],
     );
     return this.get();
   }

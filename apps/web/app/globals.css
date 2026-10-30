@@ -2124,3 +2124,47 @@ tbody tr:hover {
   font-size: 0.8rem;
   overflow-x: auto;
 }
+
+/* ---- Presupuesto de IA ---- */
+.budget-meter {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+  margin: 0.75rem 0 0.4rem;
+}
+.budget-meter-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+.budget-ok {
+  background: var(--success);
+}
+.budget-warn {
+  background: var(--warning);
+}
+.budget-bad {
+  background: var(--danger);
+}
+.budget-figures {
+  margin: 0 0 1rem;
+}
+.budget-form {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 560px;
+  margin-bottom: 1.25rem;
+}
+.budget-prices {
+  margin-top: 1rem;
+}
+.budget-prices summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.scan-item ul,
+.scan-banner ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+}

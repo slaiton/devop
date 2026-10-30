@@ -9,12 +9,23 @@ export interface AuditGuards {
   missing: { tool: string; status: string; error: string | null }[];
   /** Secretos confirmados que son NUEVOS en este cambio (o de origen desconocido) y no tienen excepción aprobada. */
   newConfirmedSecrets: number;
+  /** Una capa obligatoria se omitió por presupuesto y la política configurada es bloquear (no solo dejar incompleto). */
+  budgetBlocked?: boolean;
 }
 
-export function guardsFromLayer1(result: Layer1Result): AuditGuards {
+/** Estado de la capa 2 en una auditoría, para las guardas: si estaba prevista y cómo terminó. */
+export interface Layer2Guard {
+  status: 'ok' | 'skipped_budget' | 'not_configured' | 'failed';
+  reason: string | null;
+  budgetPolicy: 'partial' | 'block' | null;
+}
+
+export function guardsFromLayer1(result: Layer1Result, layer2?: Layer2Guard | null): AuditGuards {
+  const layer2Missing = layer2 && layer2.status !== 'ok' ? [{ tool: 'layer2', status: layer2.status, error: layer2.reason }] : [];
   return {
-    incomplete: !result.coverage.complete,
-    missing: result.coverage.missing,
+    incomplete: !result.coverage.complete || layer2Missing.length > 0,
+    missing: [...result.coverage.missing, ...layer2Missing],
+    budgetBlocked: layer2?.status === 'skipped_budget' && layer2.budgetPolicy === 'block',
     newConfirmedSecrets: result.findings.filter(
       (f) => f.category === 'secret' && f.baseline !== 'preexisting' && f.validation !== 'accepted_exception' && f.validation !== 'false_positive_suspected',
     ).length,
@@ -38,8 +49,12 @@ export function applyAuditGuards(
   }
   if (guards.incomplete) {
     const names = guards.missing.map((m) => `${m.tool} (${m.status})`).join(', ');
-    reasons.push(`Auditoría incompleta: no terminaron los escáneres obligatorios ${names}. Un resultado sin ellos no puede aprobarse automáticamente.`);
+    reasons.push(`Auditoría incompleta: no terminaron las verificaciones obligatorias ${names}. Un resultado sin ellas no puede aprobarse automáticamente.`);
     if (out === 'apto') out = 'requiere_revision';
+  }
+  if (guards.budgetBlocked) {
+    reasons.push('Presupuesto de IA agotado y la política configurada es bloquear: el cambio queda NO APTO hasta que se renueve el presupuesto o un administrador lo revise.');
+    out = 'no_apto';
   }
   return { decision: out, reasons };
 }

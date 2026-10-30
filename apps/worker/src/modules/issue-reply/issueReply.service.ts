@@ -12,7 +12,7 @@ export class IssueReplyService {
    * publica el borrador (editado o no) como comentario aparte, vía el endpoint normal
    * de comentarios. Ningún adapter de git hace falta acá. */
   async process(payload: IssueReplySuggestionJobPayload): Promise<void> {
-    const llm = await createLlmRouter();
+    const llm = await createLlmRouter({ organizationId: payload.organizationId, purpose: 'issue_reply' });
 
     await withTenant(payload.organizationId, async (client) => {
       const { rows: issueRows } = await client.query(

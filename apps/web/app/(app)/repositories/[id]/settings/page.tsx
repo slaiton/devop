@@ -11,6 +11,7 @@ interface RepoSettings {
   ignored_push_branches: string[];
   analysis_depth: 'standard' | 'deep';
   audit_layer1: boolean;
+  audit_layer2: boolean;
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -49,6 +50,7 @@ export default async function RepositorySettingsTab({ params }: { params: Promis
       ignoredPushBranches={settings.ignored_push_branches}
       analysisDepth={settings.analysis_depth}
       auditLayer1={settings.audit_layer1}
+      auditLayer2={settings.audit_layer2}
     />
   );
 }

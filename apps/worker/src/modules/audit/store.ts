@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import type { AuditGuards } from './policy';
 import type { Layer1Result } from './types';
+import type { Layer2Outcome } from './layer2/layer2.service';
 
 export type AuditStage = 'pending' | 'running_layer_1' | 'running_layer_2' | 'running_layer_3' | 'completed' | 'failed' | 'cancelled';
 
@@ -52,8 +53,10 @@ export async function saveLayer1(
     [
       guards.incomplete,
       JSON.stringify({
-        complete: layer1.coverage.complete,
-        missing: layer1.coverage.missing,
+        // Cobertura de TODA la auditoría (capa 1 y capa 2), no solo de los escáneres.
+        complete: !guards.incomplete,
+        missing: guards.missing,
+        budget_blocked: guards.budgetBlocked ?? false,
         technologies: layer1.coverage.technologies,
         suppressions: layer1.coverage.suppressions ?? {},
         scanner_config_files: layer1.coverage.scannerConfigFiles ?? [],
@@ -63,6 +66,42 @@ export async function saveLayer1(
       reviewRunId,
     ],
   );
+}
+
+/** Guarda lo que hizo la capa 2 en una revisión: su resumen, la recomendación de escalamiento y la opinión sobre cada hallazgo de la
+ * capa 1. Debe llamarse DESPUÉS de `saveLayer1` (que reemplaza las filas de scan_findings). */
+export async function saveLayer2(client: PoolClient, reviewRunId: string, outcome: Layer2Outcome, escalatedTo: string | null): Promise<void> {
+  const v = outcome.validated;
+  await client.query(
+    `UPDATE review_runs SET audit_layer2 = $1, audit_escalation = $2 WHERE id = $3`,
+    [
+      JSON.stringify({
+        status: outcome.status,
+        reason: outcome.reason,
+        model: outcome.model,
+        models: outcome.models,
+        used_as_review: outcome.usedAsReview,
+        escalated_to: escalatedTo,
+        duration_ms: outcome.durationMs,
+        usage: outcome.usage,
+        change_tags: outcome.changeTags,
+        omitted_findings: outcome.omittedFindings,
+        groups: v?.groups ?? [],
+        dismissals: v?.dismissals ?? { accepted: [], ignored: [] },
+        rejected: v?.rejected ?? [],
+        suspected: v?.suspected ?? [],
+        own_findings: v?.findings.length ?? 0,
+      }),
+      JSON.stringify(outcome.escalation),
+      reviewRunId,
+    ],
+  );
+  for (const a of v?.annotations ?? []) {
+    await client.query(
+      `UPDATE scan_findings SET triage = $1 WHERE review_run_id = $2 AND fingerprint = $3`,
+      [JSON.stringify({ ref: a.ref, group: a.group, priority: a.priority, dismissed: a.dismissed, note: a.note }), reviewRunId, a.fingerprint],
+    );
+  }
 }
 
 /** Para los hallazgos bloqueantes que no vienen del modelo (secretos): filas en `findings` para que el issue de seguimiento,
@@ -105,5 +144,6 @@ export async function loadAuditGuards(client: PoolClient, reviewRunId: string): 
     incomplete: Boolean(row?.audit_incomplete),
     missing: row?.audit_coverage?.missing ?? [],
     newConfirmedSecrets: row?.new_secrets ?? 0,
+    budgetBlocked: Boolean(row?.audit_coverage?.budget_blocked),
   };
 }

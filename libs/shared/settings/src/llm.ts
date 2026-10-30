@@ -6,6 +6,10 @@ import { decrypt } from './encryption';
 export const LLM_PROVIDER_KINDS = ['openai', 'deepseek', 'xai', 'bedrock', 'custom'] as const;
 export type LlmProviderKind = (typeof LLM_PROVIDER_KINDS)[number];
 
+/** Capa de la auditoría que atiende un agente. Sin capa (null) es un agente general: el reparto de siempre (respaldo o turnos). */
+export const LLM_AUDIT_LAYERS = ['layer2', 'layer3'] as const;
+export type LlmAuditLayer = (typeof LLM_AUDIT_LAYERS)[number];
+
 /** failover = el primero activo y los demás de respaldo; round_robin = se intercalan por turnos. */
 export const LLM_ROUTING_MODES = ['failover', 'round_robin'] as const;
 export type LlmRoutingMode = (typeof LLM_ROUTING_MODES)[number];
@@ -23,6 +27,8 @@ export interface LlmProviderConfig {
   lastUsedAt: Date | null;
   lastError: string | null;
   lastErrorAt: Date | null;
+  /** null = agente general. */
+  auditLayer: LlmAuditLayer | null;
 }
 
 interface Row {
@@ -37,6 +43,7 @@ interface Row {
   last_used_at: Date | null;
   last_error: string | null;
   last_error_at: Date | null;
+  audit_layer: LlmAuditLayer | null;
 }
 
 function toConfig(row: Row): LlmProviderConfig {
@@ -52,15 +59,25 @@ function toConfig(row: Row): LlmProviderConfig {
     lastUsedAt: row.last_used_at,
     lastError: row.last_error,
     lastErrorAt: row.last_error_at,
+    auditLayer: row.audit_layer,
   };
 }
 
-const COLUMNS = `id, name, kind, base_url, model, api_key_encrypted, position, enabled, last_used_at, last_error, last_error_at`;
+const COLUMNS = `id, name, kind, base_url, model, api_key_encrypted, position, enabled, last_used_at, last_error, last_error_at, audit_layer`;
 
-/** Agentes configurados, en el orden de uso (posición 1 primero). */
-export async function listLlmProviders(pool: Pool, options: { onlyEnabled?: boolean } = {}): Promise<LlmProviderConfig[]> {
+/** Agentes configurados, en el orden de uso (posición 1 primero). `layer`: 'general' = los que no atienden ninguna capa;
+ * 'layer2' / 'layer3' = los asignados a esa capa; sin `layer`, todos. */
+export async function listLlmProviders(
+  pool: Pool,
+  options: { onlyEnabled?: boolean; layer?: 'general' | LlmAuditLayer } = {},
+): Promise<LlmProviderConfig[]> {
+  const where: string[] = [];
+  if (options.onlyEnabled) where.push('enabled');
+  if (options.layer === 'general') where.push('audit_layer IS NULL');
+  else if (options.layer) where.push('audit_layer = $1');
   const { rows } = await pool.query(
-    `SELECT ${COLUMNS} FROM llm_providers ${options.onlyEnabled ? 'WHERE enabled' : ''} ORDER BY position, created_at`,
+    `SELECT ${COLUMNS} FROM llm_providers ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY position, created_at`,
+    options.layer && options.layer !== 'general' ? [options.layer] : [],
   );
   return rows.map(toConfig);
 }

@@ -16,10 +16,13 @@ import {
   type IssueReplySuggestionResult,
   type ProjectProfileExtraction,
   type ReconsiderFindingInput,
+  type LlmUsageRecord,
   type ReconsiderFindingResult,
   type ReviewDiffInput,
   type ReviewResult,
 } from './types';
+
+import type { TriageInput, TriageResult } from './triage';
 
 export type LlmRoutingMode = 'failover' | 'round_robin';
 
@@ -57,6 +60,10 @@ export interface LlmRouterOptions {
   onAttempt?: (record: LlmCallRecord) => void | Promise<void>;
   /** Estado de "enfriamiento" por agente. Por defecto uno compartido por todo el proceso. */
   cooldowns?: Map<string, number>;
+  /** Consumo de cada llamada (tokens, latencia) con el agente que la atendió; para costos y presupuesto. */
+  onUsage?: (usage: LlmUsageRecord & { providerId: string; provider: string }) => void;
+  /** Capa 2 de la auditoría: esfuerzo de razonamiento y tope de tokens de salida. */
+  triage?: { reasoningEffort?: string; maxOutputTokens?: number };
 }
 
 export class LlmNotConfiguredError extends Error {
@@ -200,6 +207,10 @@ export class LlmRouter implements LlmPort {
     return this.run('resolveClarificationAgentic', (l) => l.resolveClarificationAgentic(input, toolbox, options));
   }
 
+  triageAudit(input: TriageInput): Promise<TriageResult> {
+    return this.run('triageAudit', (l) => l.triageAudit(input));
+  }
+
   reconsiderFinding(input: ReconsiderFindingInput): Promise<ReconsiderFindingResult> {
     return this.run('reconsiderFinding', (l) => l.reconsiderFinding(input));
   }
@@ -234,7 +245,7 @@ export function temperatureFor(kind: string, model: string): number | null {
   return kind === 'openai' && /^(o\d|gpt-5)/i.test(model.trim()) ? null : 0.1;
 }
 
-export function buildRoutedProvider(config: ProviderConfigLike): RoutedProvider {
+export function buildRoutedProvider(config: ProviderConfigLike, routerOptions?: Pick<LlmRouterOptions, 'onUsage' | 'triage'>): RoutedProvider {
   return {
     id: config.id,
     name: config.name,
@@ -246,10 +257,12 @@ export function buildRoutedProvider(config: ProviderConfigLike): RoutedProvider 
       // ("Function tools with reasoning_effort are not supported… set reasoning_effort to 'none'"). Las rondas de
       // investigación del análisis profundo van sin razonamiento; el análisis estándar conserva el razonamiento por defecto.
       toolReasoningEffort: config.kind === 'bedrock' ? 'none' : undefined,
+      onUsage: routerOptions?.onUsage ? (u) => routerOptions.onUsage!({ ...u, providerId: config.id, provider: config.name }) : undefined,
+      triage: routerOptions?.triage,
     }),
   };
 }
 
 export function buildLlmRouter(configs: ProviderConfigLike[], options: LlmRouterOptions): LlmRouter {
-  return new LlmRouter(configs.map(buildRoutedProvider), options);
+  return new LlmRouter(configs.map((c) => buildRoutedProvider(c, options)), options);
 }

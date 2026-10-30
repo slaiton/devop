@@ -67,7 +67,7 @@ export class ProjectContextService {
       const installationId = Number(repo.installation_id);
       const [owner, name] = repo.full_name.split('/');
 
-      const llm = await createLlmRouter();
+      const llm = await createLlmRouter({ organizationId, repositoryId, purpose: 'project_profile' });
 
       const gitAdapter = await withTenant(organizationId, (client) =>
         buildGithubAdapterForInstallation(client, installationId),

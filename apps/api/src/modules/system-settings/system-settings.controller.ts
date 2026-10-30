@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Put, 
 import { JwtAuthGuard } from '../../common/jwtAuth.guard';
 import { RolesGuard } from '../../common/roles.guard';
 import { Roles } from '../../common/roles.decorator';
+import { AuditBudgetService, type AuditBudgetInput } from './audit-budget.service';
 import { LlmProvidersService, type LlmProviderInput } from './llm-providers.service';
 import { SystemSettingsService, type SystemSettingsUpdateInput } from './system-settings.service';
 
@@ -12,6 +13,7 @@ export class SystemSettingsController {
   constructor(
     private readonly service: SystemSettingsService,
     private readonly llm: LlmProvidersService,
+    private readonly budget: AuditBudgetService,
   ) {}
 
   @Get()
@@ -59,5 +61,17 @@ export class SystemSettingsController {
   @Post('llm/providers/:id/test')
   testProvider(@Param('id', ParseUUIDPipe) id: string) {
     return this.llm.test(id);
+  }
+
+  // ---- Presupuesto de IA de la auditoría por capas ----
+
+  @Get('audit-budget')
+  getAuditBudget() {
+    return this.budget.get();
+  }
+
+  @Patch('audit-budget')
+  setAuditBudget(@Body() body: AuditBudgetInput) {
+    return this.budget.set(body ?? {});
   }
 }

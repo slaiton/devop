@@ -15,6 +15,7 @@ import type {
   ResolveClarificationInput,
   ToolTraceEntry,
 } from './types';
+import type { TriageInput, TriageResult } from './triage';
 
 export interface LlmPort {
   reviewDiff(input: ReviewDiffInput): Promise<ReviewResult>;
@@ -25,6 +26,7 @@ export interface LlmPort {
     toolbox: AgentToolbox,
     options: AgenticReviewOptions,
   ): Promise<{ result: ClarificationResult; trace: ToolTraceEntry[]; stats: AgenticReviewStats }>;
+  triageAudit(input: TriageInput): Promise<TriageResult>;
   reconsiderFinding(input: ReconsiderFindingInput): Promise<ReconsiderFindingResult>;
   suggestIssueReply(input: IssueReplySuggestionInput): Promise<IssueReplySuggestionResult>;
   extractProjectProfile(input: ExtractProjectProfileInput): Promise<ProjectProfileExtraction>;

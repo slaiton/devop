@@ -22,12 +22,13 @@ import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
 import { RagContextService } from './ragContext.service';
 import { readLocalContextFiles } from './contextFiles';
-import { createLlmRouter } from '../../common/llmRouter.factory';
+import { createLlmRouter, UsageSink, type UsageContext } from '../../common/llmRouter.factory';
 import { truncateDiff } from './diffUtils';
 import { ReviewToolbox, buildFileHistorySummary, buildSymbolUsages, formatPullRequests } from './reviewToolbox';
 import { Layer1Service } from '../audit/layer1.service';
+import { Layer2Service, type Layer2Outcome } from '../audit/layer2/layer2.service';
 import { applyAuditGuards, guardsFromLayer1, type AuditGuards } from '../audit/policy';
-import { insertSecretFindings, saveLayer1, setAuditStage } from '../audit/store';
+import { insertSecretFindings, saveLayer1, saveLayer2, setAuditStage } from '../audit/store';
 import { SEVERITY_ORDER } from '../audit/normalize';
 import type { Layer1Result } from '../audit/types';
 
@@ -39,6 +40,8 @@ interface QualityGateConfig {
   analysis_depth?: 'standard' | 'deep';
   /** Auditoría por capas, capa 1: escáneres deterministas con cobertura y política propias (ver migración 0040). */
   audit_layer1?: boolean;
+  /** Capa 2: triaje con un modelo barato (requiere la capa 1). */
+  audit_layer2?: boolean;
 }
 
 const DEFAULT_GATE_CONFIG: QualityGateConfig = {
@@ -88,6 +91,7 @@ export class ReviewService {
     private readonly staticAnalysis: StaticAnalysisService,
     private readonly ragContext: RagContextService,
     private readonly layer1: Layer1Service,
+    private readonly layer2: Layer2Service,
   ) {}
 
   /** Construye el adapter de GitHub (credenciales de la App dueña de esta instalación,
@@ -98,10 +102,11 @@ export class ReviewService {
   private async buildClients(
     organizationId: string,
     installationId: number,
+    usage?: UsageContext,
   ): Promise<{ gitAdapter: GitProviderPort; llm: LlmRouter }> {
     const [gitAdapter, llm] = await Promise.all([
       withTenant(organizationId, (client) => buildGithubAdapterForInstallation(client, installationId)),
-      createLlmRouter(),
+      createLlmRouter(usage),
     ]);
     return { gitAdapter, llm };
   }
@@ -120,7 +125,15 @@ export class ReviewService {
         ]),
       );
 
-      const { gitAdapter, llm } = await this.buildClients(payload.organizationId, payload.installationId);
+      // Consumo de TODAS las llamadas al modelo de esta revisión (costos y presupuesto).
+      const sink = new UsageSink({ organizationId: payload.organizationId, reviewRunId: payload.reviewRunId, repositoryId: payload.repositoryId });
+      const { gitAdapter, llm } = await this.buildClients(payload.organizationId, payload.installationId, {
+        organizationId: payload.organizationId,
+        reviewRunId: payload.reviewRunId,
+        repositoryId: payload.repositoryId,
+        purpose: 'review',
+        sink,
+      });
 
       const diff = payload.pullNumber
         ? await gitAdapter.getPullRequestDiff({
@@ -145,7 +158,7 @@ export class ReviewService {
 
       // La llamada al modelo ocurre DENTRO del checkout: en modo profundo el revisor lee archivos,
       // busca y consulta el historial sobre ese clon, que se borra al terminar el callback.
-      const { result, analysis, layer1 } = await this.checkout.withCheckout(
+      const { result, analysis, layer1, layer2, escalatedTo } = await this.checkout.withCheckout(
         {
           owner: payload.owner,
           repo: payload.repo,
@@ -196,6 +209,40 @@ export class ReviewService {
             recentCommits,
             analyzedFiles,
           };
+          // Capa 2: triaje barato (p. ej. Luna). Si todo va bien y no hay motivo para escalar, SU revisión es la del commit; si
+          // falla, se omite por presupuesto o recomienda escalar, el revisor general (el agente de siempre, p. ej. Sol) hace
+          // la revisión completa, ya informado del triaje. Así la capa avanzada solo se paga cuando hace falta.
+          let layer2Outcome: Layer2Outcome | null = null;
+          if (layer1Result && config.audit_layer2) {
+            layer2Outcome = await this.layer2.run({
+              payload,
+              checkoutPath,
+              diff,
+              analyzedFiles,
+              layer1: layer1Result,
+              projectProfile,
+              recentCommits,
+              sink,
+            });
+            if (layer2Outcome.validated) applyTriage(layer1Result.findings, layer2Outcome.validated.annotations);
+          }
+
+          if (layer2Outcome?.status === 'ok' && layer2Outcome.reviewResult && !layer2Outcome.escalation.recommended) {
+            layer2Outcome.usedAsReview = true;
+            return {
+              result: layer2Outcome.reviewResult,
+              analysis: { mode: 'standard' as const, note: `Revisión por la capa 2 (${layer2Outcome.model}): sin motivos para una auditoría avanzada.`, trace: null, stats: null },
+              layer1: layer1Result,
+              layer2: layer2Outcome,
+              escalatedTo: null as string | null,
+            };
+          }
+
+          const escalated = layer2Outcome?.status === 'ok' && layer2Outcome.escalation.recommended;
+          if (escalated) {
+            await this.markStage(payload, 'running_layer_3');
+            reviewInput.retrievedContext = [...reviewInput.retrievedContext, { filePath: '(triaje de la capa 2)', content: layer2Outcome!.triageSummary }];
+          }
           const reviewed = await this.runLlmReview({
             deep: config.analysis_depth === 'deep',
             llm,
@@ -204,7 +251,11 @@ export class ReviewService {
             reviewInput,
             checkoutPath,
           });
-          return { ...reviewed, layer1: layer1Result };
+          if (escalated) {
+            const why = layer2Outcome!.escalation.triggers.map((t) => t.detail).join(' · ').slice(0, 400);
+            reviewed.analysis = { ...reviewed.analysis, note: `Escalado a revisión avanzada: ${why}${reviewed.analysis.note ? ` — ${reviewed.analysis.note}` : ''}` };
+          }
+          return { ...reviewed, layer1: layer1Result, layer2: layer2Outcome, escalatedTo: escalated ? 'revisor general' : null };
         },
       );
 
@@ -212,11 +263,16 @@ export class ReviewService {
       // La política de la capa 1 solo puede endurecer el veredicto (secretos nuevos, cobertura incompleta).
       let audit: AuditOutcome | null = null;
       if (layer1) {
-        const guards = guardsFromLayer1(layer1);
+        const guards = guardsFromLayer1(
+          layer1,
+          config.audit_layer2 ? { status: layer2?.status ?? 'failed', reason: layer2?.reason ?? null, budgetPolicy: layer2?.budgetPolicy ?? null } : null,
+        );
         const applied = applyAuditGuards(gateDecision, guards, config);
         gateDecision = applied.decision;
-        audit = { layer1, guards, reasons: applied.reasons };
+        audit = { layer1, layer2: config.audit_layer2 ? layer2 : null, escalatedTo, guards, reasons: applied.reasons };
       }
+      // El consumo de todas las llamadas ya debe estar guardado antes de cerrar la revisión (el presupuesto lo lee de ahí).
+      await sink.flush();
 
       await this.persistResult(payload, result, gateDecision, analyzedFiles, analysis, llm.reviewUsage(), audit);
       await this.publishToGithub(gitAdapter, payload, result, gateDecision, audit?.reasons ?? []);
@@ -527,8 +583,8 @@ export class ReviewService {
         const { rows: inserted } = await client.query(
           `INSERT INTO findings
              (organization_id, review_run_id, category, severity, file_path, line_start, line_end, title, explanation, suggested_fix, confidence, rule_source, blocking, violated_rule,
-              status, question, verify_with, clarification_round)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'llm', $12, $13, $14, $15, $16, $17)
+              status, question, verify_with, clarification_round, validation_status, audit_refs)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $18, $12, $13, $14, $15, $16, $17, $19, $20)
            RETURNING id`,
           [
             payload.organizationId,
@@ -548,6 +604,9 @@ export class ReviewService {
             question,
             question && finding.verify_with ? JSON.stringify(finding.verify_with) : null,
             question ? 1 : 0,
+            audit?.layer2?.usedAsReview ? 'layer2' : 'llm',
+            finding.validation_status ?? null,
+            finding.source_refs && finding.source_refs.length > 0 ? JSON.stringify(finding.source_refs) : null,
           ],
         );
         if (question) {
@@ -560,6 +619,7 @@ export class ReviewService {
 
       if (audit) {
         await saveLayer1(client, payload.organizationId, payload.reviewRunId, audit.layer1, audit.guards, audit.reasons);
+        if (audit.layer2) await saveLayer2(client, payload.reviewRunId, audit.layer2, audit.escalatedTo);
         // Los secretos que bloquean también quedan como hallazgos (issue de seguimiento, avisos y página del commit).
         if (gateDecision === 'no_apto') await insertSecretFindings(client, payload.organizationId, payload.reviewRunId, audit.layer1);
       }
@@ -965,7 +1025,7 @@ export class ReviewService {
   private async getQualityGateConfig(organizationId: string, repositoryId: string): Promise<QualityGateConfig> {
     return withTenant(organizationId, async (client) => {
       const { rows } = await client.query(
-        `SELECT min_coverage_pct, block_on_risk_level, block_on_secret, analysis_depth, audit_layer1
+        `SELECT min_coverage_pct, block_on_risk_level, block_on_secret, analysis_depth, audit_layer1, audit_layer2
          FROM quality_gate_configs
          WHERE organization_id = $1 AND (repository_id = $2 OR repository_id IS NULL)
          ORDER BY repository_id NULLS LAST
@@ -976,7 +1036,7 @@ export class ReviewService {
     });
   }
 
-  private async markStage(payload: ReviewJobPayload, stage: 'running_layer_1' | 'running_layer_2'): Promise<void> {
+  private async markStage(payload: ReviewJobPayload, stage: 'running_layer_1' | 'running_layer_2' | 'running_layer_3'): Promise<void> {
     await withTenant(payload.organizationId, (client) => setAuditStage(client, payload.reviewRunId, stage));
   }
 
@@ -1019,6 +1079,9 @@ function extractAnalyzedFiles(diff: string): string[] {
 /** Lo que la capa 1 le aporta a una revisión: sus resultados, las guardas que impone y los motivos (para mostrarlos). */
 interface AuditOutcome {
   layer1: Layer1Result;
+  layer2: Layer2Outcome | null;
+  /** Quién hizo la revisión avanzada cuando la capa 2 recomendó escalar (por ahora el revisor general). */
+  escalatedTo: string | null;
   guards: AuditGuards;
   reasons: string[];
 }
@@ -1039,4 +1102,11 @@ function layer1ToStaticFindings(result: Layer1Result): StaticAnalysisFinding[] {
       message: `[${f.baseline === 'new' ? 'nuevo en este cambio' : f.baseline === 'preexisting' ? 'preexistente' : 'origen desconocido'}] ${f.message}`,
       severity: f.severity,
     }));
+}
+
+/** Aplica a los hallazgos de la capa 1 lo que la capa 2 aceptó descartar (solo falsos positivos de patrones heurísticos; la propia
+ * validación ya excluyó secretos y coincidencias deterministas confirmadas). */
+function applyTriage(findings: Layer1Result['findings'], annotations: { fingerprint: string; dismissed: boolean }[]): void {
+  const dismissed = new Set(annotations.filter((a) => a.dismissed).map((a) => a.fingerprint));
+  for (const f of findings) if (dismissed.has(f.fingerprint)) f.validation = 'false_positive_suspected';
 }

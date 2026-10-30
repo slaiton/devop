@@ -33,12 +33,20 @@ import {
   buildSinglePassReviewPrompt,
 } from './prompt';
 import type { LlmPort } from './llmPort';
+import { TRIAGE_JSON_SCHEMA, buildTriagePrompt, triageResultSchema, type TriageInput, type TriageResult } from './triage';
+import type { LlmUsageRecord } from './types';
 
 /**
  * Implementa LlmPort contra cualquier proveedor compatible con la API de OpenAI
  * (Together.ai por defecto en el MVP - ver docs/architecture/08-mvp-fase0-stack.md).
  * Cambiar de proveedor o modelo es configuración (baseURL/apiKey/model), no código.
  */
+interface CompletionOptions {
+  format?: { name: string; schema: Record<string, unknown> };
+  reasoningEffort?: string;
+  maxOutputTokens?: number;
+}
+
 function truncate(text: string, max = 500): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
@@ -47,23 +55,34 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
   private readonly client: OpenAI;
   private readonly temperature: number | null;
   private readonly toolReasoningEffort: string | undefined;
+  private readonly onUsage: ((u: LlmUsageRecord) => void) | undefined;
+  private readonly triage: { reasoningEffort?: string; maxOutputTokens?: number };
 
   constructor(
     private readonly model: string,
     baseURL: string,
     apiKey: string,
     private readonly embeddingFn: (text: string) => Promise<number[]>,
-    options: { temperature?: number | null; toolReasoningEffort?: string } = {},
+    options: {
+      temperature?: number | null;
+      toolReasoningEffort?: string;
+      /** Se invoca tras cada llamada con su consumo (para costos); los errores del callback se ignoran. */
+      onUsage?: (u: LlmUsageRecord) => void;
+      /** Capa 2 de la auditoría: esfuerzo de razonamiento y tope de tokens de salida. */
+      triage?: { reasoningEffort?: string; maxOutputTokens?: number };
+    } = {},
   ) {
     this.client = new OpenAI({ baseURL, apiKey });
     // null = no enviar el parámetro (los modelos de razonamiento de OpenAI solo aceptan el valor por defecto)
     this.temperature = options.temperature === undefined ? 0.1 : options.temperature;
     this.toolReasoningEffort = options.toolReasoningEffort;
+    this.onUsage = options.onUsage;
+    this.triage = options.triage ?? {};
   }
 
   async reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> {
     const messages = buildSinglePassReviewPrompt(input);
-    return this.requestStructured(messages, reviewResultSchema);
+    return this.requestStructured(messages, reviewResultSchema, 'reviewDiff');
   }
 
   /** Revisión con investigación: el modelo puede pedir herramientas de solo lectura (leer archivos,
@@ -76,7 +95,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
   }
 
   async resolveClarification(input: ResolveClarificationInput): Promise<ClarificationResult> {
-    return this.requestStructured(buildResolveClarificationPrompt(input, false), clarificationResultSchema);
+    return this.requestStructured(buildResolveClarificationPrompt(input, false), clarificationResultSchema, 'resolveClarification');
   }
 
   /** Re-evalúa una pregunta con la respuesta del desarrollador, pudiendo verificar otros repos con herramientas. */
@@ -129,6 +148,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       rounds += 1;
 
       let completion;
+      const roundStarted = Date.now();
       try {
         completion = await this.client.chat.completions.create(
           {
@@ -152,6 +172,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
         console.error(`[llm-port] fallo en la ronda ${rounds} del análisis profundo (modelo "${this.model}"): ${(err as Error).message}`);
         throw err;
       }
+      this.reportUsage('agentic', completion, roundStarted);
       promptTokens += completion.usage?.prompt_tokens ?? 0;
       completionTokens += completion.usage?.completion_tokens ?? 0;
 
@@ -228,17 +249,27 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
 
   async reconsiderFinding(input: ReconsiderFindingInput): Promise<ReconsiderFindingResult> {
     const messages = buildReconsiderFindingPrompt(input);
-    return this.requestStructured(messages, reconsiderFindingResultSchema);
+    return this.requestStructured(messages, reconsiderFindingResultSchema, 'reconsiderFinding');
   }
 
   async suggestIssueReply(input: IssueReplySuggestionInput): Promise<IssueReplySuggestionResult> {
     const messages = buildIssueReplySuggestionPrompt(input);
-    return this.requestStructured(messages, issueReplySuggestionResultSchema);
+    return this.requestStructured(messages, issueReplySuggestionResultSchema, 'suggestIssueReply');
   }
 
   async extractProjectProfile(input: ExtractProjectProfileInput): Promise<ProjectProfileExtraction> {
     const messages = buildExtractProjectProfilePrompt(input);
-    return this.requestStructured(messages, projectProfileExtractionSchema);
+    return this.requestStructured(messages, projectProfileExtractionSchema, 'extractProjectProfile');
+  }
+
+  /** Capa 2 de la auditoría: triaje de los hallazgos de los escáneres con salida JSON ESTRICTA (esquema validado por Bedrock y,
+   * además, por la aplicación). No usa herramientas: el contexto llega ya armado. */
+  async triageAudit(input: TriageInput): Promise<TriageResult> {
+    return this.requestStructured(buildTriagePrompt(input), triageResultSchema, 'triageAudit', {
+      format: { name: 'triaje_auditoria', schema: TRIAGE_JSON_SCHEMA },
+      reasoningEffort: this.triage.reasoningEffort,
+      maxOutputTokens: this.triage.maxOutputTokens,
+    });
   }
 
   async embed(text: string): Promise<number[]> {
@@ -250,8 +281,8 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
    * un reintento con el error de validación adjunto resuelve la mayoría de los casos
    * sin intervención humana. Si el reintento también falla, es una señal real de que el
    * modelo/proveedor configurado no está respondiendo correctamente — se deja log. */
-  private async requestStructured<T>(messages: ChatCompletionMessageParam[], schema: ZodSchema<T>): Promise<T> {
-    const raw = await this.requestCompletion(messages);
+  private async requestStructured<T>(messages: ChatCompletionMessageParam[], schema: ZodSchema<T>, method = 'structured', opts: CompletionOptions = {}): Promise<T> {
+    const raw = await this.requestCompletion(messages, method, opts);
     try {
       return schema.parse(JSON.parse(raw));
     } catch (err) {
@@ -266,7 +297,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
           content: `Tu respuesta anterior no cumplió el esquema esperado (${(err as Error).message}). Responde de nuevo SOLO con el JSON válido, sin texto adicional.`,
         },
       ];
-      const retryRaw = await this.requestCompletion(retryMessages);
+      const retryRaw = await this.requestCompletion(retryMessages, method, opts);
       try {
         return schema.parse(JSON.parse(retryRaw));
       } catch (retryErr) {
@@ -279,20 +310,65 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     }
   }
 
-  private async requestCompletion(messages: ChatCompletionMessageParam[]): Promise<string> {
+  private reportUsage(method: string, completion: { usage?: unknown } | null, startedAt: number, err?: unknown): void {
+    if (!this.onUsage) return;
+    try {
+      const u = (completion?.usage ?? {}) as {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+        completion_tokens_details?: { reasoning_tokens?: number };
+      };
+      this.onUsage({
+        method,
+        model: this.model,
+        promptTokens: u.prompt_tokens ?? 0,
+        completionTokens: u.completion_tokens ?? 0,
+        cachedTokens: u.prompt_tokens_details?.cached_tokens ?? 0,
+        cacheWriteTokens: u.prompt_tokens_details?.cache_write_tokens ?? 0,
+        reasoningTokens: u.completion_tokens_details?.reasoning_tokens ?? 0,
+        ms: Date.now() - startedAt,
+        ok: !err,
+        error: err ? (err as Error).message?.slice(0, 300) : undefined,
+      });
+    } catch {
+      // el consumo es información auxiliar: nunca debe romper el análisis
+    }
+  }
+
+  private async requestCompletion(messages: ChatCompletionMessageParam[], method = 'structured', opts: CompletionOptions = {}): Promise<string> {
+    const startedAt = Date.now();
+    // `json_schema` estricto cuando se pide una salida con esquema; si no, `json_object` como siempre.
+    // Los parámetros de razonamiento y de tope de salida no están en los tipos del SDK para todos los modelos: se arman aparte.
+    const params: Record<string, unknown> = {
+      model: this.model,
+      messages,
+      response_format: opts.format ? { type: 'json_schema', json_schema: { name: opts.format.name, strict: true, schema: opts.format.schema } } : { type: 'json_object' },
+      ...(this.temperature === null ? {} : { temperature: this.temperature }),
+      ...(opts.reasoningEffort ? { reasoning_effort: opts.reasoningEffort } : {}),
+      ...(opts.maxOutputTokens ? { max_completion_tokens: opts.maxOutputTokens } : {}),
+    };
     let completion;
     try {
-      completion = await this.client.chat.completions.create({
-        model: this.model,
-        messages,
-        response_format: { type: 'json_object' },
-        ...(this.temperature === null ? {} : { temperature: this.temperature }),
-      });
+      try {
+        completion = await this.client.chat.completions.create(params as never);
+      } catch (err) {
+        // Algunos proveedores no aceptan el tope de salida: se reintenta una vez sin él.
+        const status = (err as { status?: number }).status;
+        if (opts.maxOutputTokens && status === 400 && /max_completion_tokens|max_tokens/i.test((err as Error).message)) {
+          delete params.max_completion_tokens;
+          completion = await this.client.chat.completions.create(params as never);
+        } else {
+          throw err;
+        }
+      }
     } catch (err) {
+      this.reportUsage(method, null, startedAt, err);
       console.error(`[llm-port] fallo llamando al proveedor de inferencia (modelo "${this.model}"): ${(err as Error).message}`);
       throw err;
     }
-    const content = completion.choices[0]?.message?.content;
+    this.reportUsage(method, completion, startedAt);
+    const content = (completion as { choices: { message?: { content?: string | null } }[] }).choices[0]?.message?.content;
     if (!content) {
       console.error(`[llm-port] el proveedor de inferencia devolvió una respuesta vacía (modelo "${this.model}")`);
       throw new Error('El proveedor de inferencia devolvió una respuesta vacía');

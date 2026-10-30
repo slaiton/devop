@@ -103,6 +103,25 @@ const reason = (r) => `HTTP ${r.status}: ${(r.json?.error?.message ?? r.text).to
   }
   check('4. JSON Schema estricto devuelve un objeto que cumple el esquema', r.status === 200 && parsed && ['info', 'low', 'medium', 'high', 'critical'].includes(parsed.severidad), r.status === 200 ? JSON.stringify(parsed) : reason(r));
 
+  // 4b) La combinación que usa la capa 2 de la auditoría: json_schema estricto + razonamiento bajo + tope de tokens de salida
+  r = await call('/chat/completions', {
+    model: MODEL,
+    reasoning_effort: 'low',
+    max_completion_tokens: 800,
+    messages: [{ role: 'user', content: 'Clasifica este hallazgo: "contraseña en texto plano en un log". Severidad y categoría.' }],
+    response_format: {
+      type: 'json_schema',
+      json_schema: { name: 'clasificacion', strict: true, schema: { type: 'object', properties: { severidad: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] }, categoria: { type: 'string' }, ref: { type: ['string', 'null'] } }, required: ['severidad', 'categoria', 'ref'], additionalProperties: false } },
+    },
+  });
+  let parsed2 = null;
+  try {
+    parsed2 = JSON.parse(r.json?.choices?.[0]?.message?.content ?? '');
+  } catch {
+    // se informa abajo
+  }
+  check('4b. json_schema estricto + reasoning_effort=low + max_completion_tokens (lo que usa la capa 2)', r.status === 200 && parsed2 && 'severidad' in parsed2, r.status === 200 ? JSON.stringify(parsed2 ?? r.json?.choices?.[0]) : reason(r));
+
   // 5) Llamada a funciones (herramientas del cliente): lo que usa el análisis profundo
   r = await call('/chat/completions', {
     model: MODEL,

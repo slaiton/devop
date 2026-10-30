@@ -92,3 +92,4 @@ export { encrypt, decrypt } from './encryption';
 export { sendEmail, SmtpNotConfiguredError } from './email';
 
 export * from './llm';
+export * from './audit';

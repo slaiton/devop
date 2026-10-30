@@ -4,6 +4,7 @@ import { useState, type FormEvent } from 'react';
 
 export type AgentKind = 'openai' | 'deepseek' | 'xai' | 'bedrock' | 'custom';
 export type RoutingMode = 'failover' | 'round_robin';
+export type AgentLayer = 'layer2' | 'layer3' | null;
 
 export interface AgentProvider {
   id: string;
@@ -17,6 +18,8 @@ export interface AgentProvider {
   lastUsedAt: string | null;
   lastError: string | null;
   lastErrorAt: string | null;
+  /** null = agente general; si no, atiende esa capa de la auditoría y queda fuera de la rotación general. */
+  auditLayer: AgentLayer;
 }
 
 export interface AgentsConfig {
@@ -61,9 +64,9 @@ const PRESETS: Preset[] = [
   {
     kind: 'bedrock',
     label: 'Amazon Bedrock',
-    name: 'GPT-5.6 Sol (Bedrock)',
+    name: 'Amazon Bedrock',
     baseUrl: 'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1',
-    models: ['global.openai.gpt-5.6-sol', 'us.openai.gpt-5.6-sol'],
+    models: ['us.openai.gpt-5.6-luna', 'us.openai.gpt-5.6-sol', 'global.openai.gpt-5.6-luna', 'global.openai.gpt-5.6-sol'],
     hint: 'Pega la clave API de Bedrock (consola de Bedrock → API keys) y cambia us-east-1 en la URL por tu región. En bedrock-runtime el modelo se llama con un perfil de inferencia: global.… (más barato, puede enrutar a cualquier región) o us.… (solo EE. UU.). La identidad IAM de la clave necesita bedrock:InvokeModel sobre el perfil y sobre project/default.',
   },
   {
@@ -88,8 +91,12 @@ function timeAgo(iso: string | null): string {
   return `hace ${Math.floor(hrs / 24)} d`;
 }
 
+const LAYER_LABEL: Record<'layer2' | 'layer3', string> = { layer2: 'Capa 2 · triaje', layer3: 'Capa 3 · auditoría avanzada' };
+
 interface FormState {
   kind: AgentKind;
+  /** '' = general. */
+  auditLayer: '' | 'layer2' | 'layer3';
   name: string;
   baseUrl: string;
   model: string;
@@ -100,7 +107,7 @@ interface FormState {
 
 const emptyForm = (kind: AgentKind): FormState => {
   const p = presetOf(kind);
-  return { kind, name: p.name, baseUrl: p.baseUrl, model: p.models[0] ?? '', apiKey: '', clearApiKey: false, enabled: true };
+  return { kind, auditLayer: '', name: p.name, baseUrl: p.baseUrl, model: p.models[0] ?? '', apiKey: '', clearApiKey: false, enabled: true };
 };
 
 async function request<T>(url: string, method: string, body?: unknown): Promise<T> {
@@ -131,7 +138,8 @@ export function AiAgentsPanel({ initial }: { initial: AgentsConfig }) {
   const [tests, setTests] = useState<Record<string, { ok: boolean; text: string }>>({});
 
   const { providers, mode } = config;
-  const enabled = providers.filter((p) => p.enabled);
+  // El reparto (respaldo / intercalar) solo afecta a los agentes generales; los de una capa atienden esa capa.
+  const enabled = providers.filter((p) => p.enabled && !p.auditLayer);
 
   async function act<T extends AgentsConfig>(key: string, fn: () => Promise<T>): Promise<boolean> {
     setBusy(key);
@@ -171,7 +179,7 @@ export function AiAgentsPanel({ initial }: { initial: AgentsConfig }) {
   }
 
   function startEdit(p: AgentProvider) {
-    setForm({ kind: p.kind, name: p.name, baseUrl: p.baseUrl, model: p.model, apiKey: '', clearApiKey: false, enabled: p.enabled });
+    setForm({ kind: p.kind, auditLayer: p.auditLayer ?? '', name: p.name, baseUrl: p.baseUrl, model: p.model, apiKey: '', clearApiKey: false, enabled: p.enabled });
     setEditing(p.id);
     setError(null);
   }
@@ -189,6 +197,7 @@ export function AiAgentsPanel({ initial }: { initial: AgentsConfig }) {
       baseUrl: form.baseUrl,
       model: form.model,
       enabled: form.enabled,
+      auditLayer: form.auditLayer || null,
       ...(form.apiKey ? { apiKey: form.apiKey } : {}),
       ...(form.clearApiKey ? { clearApiKey: true } : {}),
     };
@@ -228,6 +237,7 @@ export function AiAgentsPanel({ initial }: { initial: AgentsConfig }) {
   /** Etiqueta de rol según el modo y la posición entre los activos. */
   function roleOf(p: AgentProvider): string {
     if (!p.enabled) return 'Desactivado';
+    if (p.auditLayer) return LAYER_LABEL[p.auditLayer];
     const idx = enabled.findIndex((x) => x.id === p.id);
     if (mode === 'round_robin') return enabled.length > 1 ? 'En rotación' : 'Único activo';
     return idx === 0 ? 'Principal' : `Respaldo ${idx}`;
@@ -379,6 +389,22 @@ export function AiAgentsPanel({ initial }: { initial: AgentsConfig }) {
             </label>
           </p>
           <p className="agents-hint">{preset.hint}</p>
+          <p>
+            <label>
+              Rol en la auditoría
+              <select value={form.auditLayer} onChange={(e) => setForm({ ...form, auditLayer: e.target.value as FormState['auditLayer'] })}>
+                <option value="">General (revisión de commits, reconsideraciones y respaldo)</option>
+                <option value="layer2">Capa 2 · triaje (modelo barato: agrupa, filtra falsos positivos y decide si escalar)</option>
+                <option value="layer3">Capa 3 · auditoría avanzada (modelo potente, solo cuando se escala)</option>
+              </select>
+            </label>
+          </p>
+          {form.auditLayer && (
+            <p className="agents-hint">
+              Un agente con rol de capa queda fuera de la rotación general. La capa 2 se activa por repositorio (Configuración → Auditoría por
+              capas); si no asignas ningún agente a una capa, esa capa no corre y la auditoría queda incompleta.
+            </p>
+          )}
           <p>
             <label>
               Nombre (el que verás en el orden y en cada análisis)

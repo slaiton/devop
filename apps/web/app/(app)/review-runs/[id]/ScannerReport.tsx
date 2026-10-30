@@ -49,6 +49,7 @@ const STATUS_LABEL: Record<ScannerRunRow['status'], string> = {
   skipped: 'no aplica',
   not_installed: 'no disponible',
 };
+const LAYER_STATUS: Record<string, string> = { skipped_budget: 'omitida por presupuesto', not_configured: 'sin agente asignado', failed: 'falló' };
 const CATEGORY_LABEL: Record<ScanFindingRow['category'], string> = {
   secret: 'secreto',
   sast: 'código',
@@ -86,9 +87,11 @@ export function ScannerReport({
 
       {incomplete && coverage && (
         <p className="scan-banner scan-banner-bad" role="alert">
-          <strong>Auditoría incompleta.</strong> No terminaron escáneres obligatorios:{' '}
-          {coverage.missing.map((m) => `${m.tool} (${STATUS_LABEL[m.status as ScannerRunRow['status']] ?? m.status})`).join(', ')}. Un resultado sin ellos
-          no puede aprobarse automáticamente.
+          <strong>Auditoría incompleta.</strong> No terminaron verificaciones obligatorias:{' '}
+          {coverage.missing
+            .map((m) => `${m.tool === 'layer2' ? 'capa 2' : m.tool} (${STATUS_LABEL[m.status as ScannerRunRow['status']] ?? LAYER_STATUS[m.status] ?? m.status})`)
+            .join(', ')}
+          . Un resultado sin ellas no puede aprobarse automáticamente.
         </p>
       )}
       {(coverage?.policy_reasons ?? [])

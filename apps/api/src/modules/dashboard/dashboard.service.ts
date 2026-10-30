@@ -120,7 +120,8 @@ export class DashboardService {
                 COALESCE(qgc.auto_merge_on_green, false) AS auto_merge_on_green,
                 COALESCE(qgc.ignored_push_branches, ARRAY[r.default_branch]) AS ignored_push_branches,
                 COALESCE(qgc.analysis_depth, 'standard') AS analysis_depth,
-                COALESCE(qgc.audit_layer1, false) AS audit_layer1
+                COALESCE(qgc.audit_layer1, false) AS audit_layer1,
+                COALESCE(qgc.audit_layer2, false) AS audit_layer2
          FROM repositories r
          LEFT JOIN quality_gate_configs qgc
            ON qgc.organization_id = r.organization_id AND qgc.repository_id = r.id
@@ -144,11 +145,21 @@ export class DashboardService {
       ignoredPushBranches?: string[];
       analysisDepth?: string;
       auditLayer1?: boolean;
+      auditLayer2?: boolean;
     },
   ) {
     if (settings.auditLayer1 !== undefined && typeof settings.auditLayer1 !== 'boolean') {
       throw new BadRequestException('auditLayer1 debe ser true o false');
     }
+    if (settings.auditLayer2 !== undefined && typeof settings.auditLayer2 !== 'boolean') {
+      throw new BadRequestException('auditLayer2 debe ser true o false');
+    }
+    // La capa 2 triagea lo que encuentra la capa 1: no se puede activar sin ella, y apagar la capa 1 apaga también la 2.
+    if (settings.auditLayer2 === true) {
+      const current = settings.auditLayer1 ?? (await this.getRepositorySettings(orgId, repositoryId)).audit_layer1;
+      if (!current) throw new BadRequestException('la capa 2 requiere la capa 1 activa');
+    }
+    if (settings.auditLayer1 === false) settings.auditLayer2 = false;
     if (settings.analysisDepth !== undefined && settings.analysisDepth !== 'standard' && settings.analysisDepth !== 'deep') {
       throw new BadRequestException('analysisDepth debe ser "standard" o "deep"');
     }
@@ -162,13 +173,14 @@ export class DashboardService {
         settings.ignoredPushBranches,
         settings.analysisDepth,
         settings.auditLayer1,
+        settings.auditLayer2,
       ].some((v) => v !== undefined);
       if (hasChanges) {
         await client.query(
           `INSERT INTO quality_gate_configs
              (organization_id, repository_id, promotion_source_branch, promotion_target_branch,
-              auto_create_pr_on_push, notify_author_on_push, auto_merge_on_green, ignored_push_branches, analysis_depth, audit_layer1)
-           VALUES ($1, $2, COALESCE($3, 'staging'), COALESCE($4, 'main'), COALESCE($5, false), COALESCE($6, true), COALESCE($7, false), $8, COALESCE($9, 'standard'), COALESCE($10, false))
+              auto_create_pr_on_push, notify_author_on_push, auto_merge_on_green, ignored_push_branches, analysis_depth, audit_layer1, audit_layer2)
+           VALUES ($1, $2, COALESCE($3, 'staging'), COALESCE($4, 'main'), COALESCE($5, false), COALESCE($6, true), COALESCE($7, false), $8, COALESCE($9, 'standard'), COALESCE($10, false), COALESCE($11, false))
            ON CONFLICT (organization_id, repository_id) DO UPDATE
              SET promotion_source_branch = COALESCE($3, quality_gate_configs.promotion_source_branch),
                  promotion_target_branch = COALESCE($4, quality_gate_configs.promotion_target_branch),
@@ -177,7 +189,8 @@ export class DashboardService {
                  auto_merge_on_green = COALESCE($7, quality_gate_configs.auto_merge_on_green),
                  ignored_push_branches = COALESCE($8, quality_gate_configs.ignored_push_branches),
                  analysis_depth = COALESCE($9, quality_gate_configs.analysis_depth),
-                 audit_layer1 = COALESCE($10, quality_gate_configs.audit_layer1)`,
+                 audit_layer1 = COALESCE($10, quality_gate_configs.audit_layer1),
+                 audit_layer2 = COALESCE($11, quality_gate_configs.audit_layer2)`,
           [
             orgId,
             repositoryId,
@@ -189,6 +202,7 @@ export class DashboardService {
             settings.ignoredPushBranches ?? null,
             settings.analysisDepth ?? null,
             settings.auditLayer1 ?? null,
+            settings.auditLayer2 ?? null,
           ],
         );
       }
@@ -519,7 +533,22 @@ export class DashboardService {
                   (baseline_status = 'new') DESC, file_path, line_start LIMIT 500`,
         [reviewRunId],
       );
-      return { ...run, findings: findingRows, clarifications: clarificationRows, scanner_runs: scannerRuns, scan_findings: scanFindings };
+      // Consumo de IA de esta auditoría: por capa/propósito y modelo, con tokens y costo estimado.
+      const { rows: invocations } = await client.query(
+        `SELECT purpose, model, count(*)::int AS calls, COALESCE(sum(prompt_tokens), 0)::int AS prompt_tokens,
+                COALESCE(sum(completion_tokens), 0)::int AS completion_tokens, sum(cost_usd) AS cost_usd,
+                count(*) FILTER (WHERE cost_usd IS NULL AND ok)::int AS unpriced, count(*) FILTER (WHERE NOT ok)::int AS errors
+         FROM llm_invocations WHERE review_run_id = $1 GROUP BY purpose, model ORDER BY purpose, model`,
+        [reviewRunId],
+      );
+      return {
+        ...run,
+        findings: findingRows,
+        clarifications: clarificationRows,
+        scanner_runs: scannerRuns,
+        scan_findings: scanFindings,
+        llm_invocations: invocations.map((r) => ({ ...r, cost_usd: r.cost_usd === null ? null : Number(r.cost_usd) })),
+      };
     });
   }
 

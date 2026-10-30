@@ -5,6 +5,7 @@ import { GateBadge } from '../../../GateBadge';
 import { getSession } from '../../../session';
 import { AnalysisTrace, type AnalysisStats, type LlmFailover, type TraceEntry } from './AnalysisTrace';
 import { ScannerReport, type AuditCoverage, type ScanFindingRow, type ScannerRunRow } from './ScannerReport';
+import { TriageReport, type Escalation, type InvocationRow, type Layer2Summary } from './TriageReport';
 import { ClarificationThread, type ClarificationMessage } from './ClarificationThread';
 import { ReconsiderFindingButton } from './ReconsiderFindingButton';
 
@@ -60,6 +61,9 @@ interface ReviewRunDetail {
   audit_coverage: AuditCoverage | null;
   scanner_runs: ScannerRunRow[];
   scan_findings: ScanFindingRow[];
+  audit_layer2: Layer2Summary | null;
+  audit_escalation: Escalation | null;
+  llm_invocations: InvocationRow[];
 }
 
 const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
@@ -180,6 +184,8 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
       />
 
       <ScannerReport runs={run.scanner_runs} findings={run.scan_findings} coverage={run.audit_coverage} stage={run.audit_stage} />
+
+      <TriageReport layer2={run.audit_layer2} escalation={run.audit_escalation} invocations={run.llm_invocations} />
 
       {run.analyzed_files && run.analyzed_files.length > 0 && (
         <>

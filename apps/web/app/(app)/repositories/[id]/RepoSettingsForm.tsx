@@ -13,6 +13,7 @@ export function RepoSettingsForm({
   ignoredPushBranches,
   analysisDepth,
   auditLayer1,
+  auditLayer2,
 }: {
   repositoryId: string;
   promotionSourceBranch: string;
@@ -23,6 +24,7 @@ export function RepoSettingsForm({
   ignoredPushBranches: string[];
   analysisDepth: 'standard' | 'deep';
   auditLayer1: boolean;
+  auditLayer2: boolean;
 }) {
   const router = useRouter();
   const [sourceBranch, setSourceBranch] = useState(promotionSourceBranch);
@@ -33,6 +35,7 @@ export function RepoSettingsForm({
   const [ignoredBranches, setIgnoredBranches] = useState(ignoredPushBranches.join(', '));
   const [depth, setDepth] = useState<'standard' | 'deep'>(analysisDepth);
   const [layer1, setLayer1] = useState(auditLayer1);
+  const [layer2, setLayer2] = useState(auditLayer2);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -54,6 +57,7 @@ export function RepoSettingsForm({
           autoMergeOnGreen: autoMerge,
           analysisDepth: depth,
           auditLayer1: layer1,
+          auditLayer2: layer1 && layer2,
           ignoredPushBranches: ignoredBranches
             .split(',')
             .map((b) => b.trim())
@@ -102,13 +106,32 @@ export function RepoSettingsForm({
       <fieldset className="depth-picker">
         <legend>Auditoría por capas</legend>
         <label className="depth-option">
-          <input type="checkbox" checked={layer1} onChange={(e) => setLayer1(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={layer1}
+            onChange={(e) => {
+              setLayer1(e.target.checked);
+              if (!e.target.checked) setLayer2(false);
+            }}
+          />
           <span>
             <strong>Capa 1: escáneres deterministas</strong>
             <small>
               Antes de la IA corren, aislados y con versiones fijas, solo los escáneres que aplican a este repo: Gitleaks (secretos), Semgrep
               (código), Trivy (dependencias), Checkov (Terraform/IaC) y Hadolint (Dockerfile). Un secreto nuevo bloquea siempre, y si algún
               escáner obligatorio no termina bien la auditoría queda <em>incompleta</em> y nunca sale APTO.
+            </small>
+          </span>
+        </label>
+        <label className="depth-option">
+          <input type="checkbox" checked={layer1 && layer2} disabled={!layer1} onChange={(e) => setLayer2(e.target.checked)} />
+          <span>
+            <strong>Capa 2: triaje con IA</strong>
+            <small>
+              Un modelo barato (el agente asignado a la capa 2 en Configuración) agrupa los hallazgos de los escáneres, descarta falsos
+              positivos con evidencia, busca fallos de lógica y autorización que los escáneres no ven y decide si el cambio merece una
+              auditoría avanzada. Lo que dice se comprueba contra el repositorio antes de aceptarlo y nunca puede anular un bloqueo.
+              Requiere la capa 1. Respeta el presupuesto de IA.
             </small>
           </span>
         </label>
