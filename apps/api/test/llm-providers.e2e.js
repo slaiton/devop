@@ -165,6 +165,22 @@ const mock = http.createServer((req, res) => {
     check('probar: servidor inalcanzable → error claro, no 500', r.status === 201 && r.json.ok === false && /no se pudo conectar/.test(r.json.error), r.text);
     check('probar un agente inexistente → 404', (await call(`/system-settings/llm/providers/${crypto.randomUUID()}/test`, admin, { method: 'POST' })).status === 404);
 
+    // ---- ventana de contexto y tokens de salida por agente (gestión de contexto por capa)
+    r = await call(`/system-settings/llm/providers/${pOpenai.id}`, admin, { method: 'PATCH', body: { contextWindowTokens: '272.000', maxOutputTokens: 16000 } });
+    let withCtx = r.json.providers.find((p) => p.id === pOpenai.id);
+    check('ventana de contexto: se guarda (acepta "272.000" con separador de miles) y se devuelve junto con los tokens de salida reservados', r.status === 200 && withCtx.contextWindowTokens === 272000 && withCtx.maxOutputTokens === 16000, r.text);
+    check('ventana de contexto: sin enviarla en otra edición se conserva', (await call(`/system-settings/llm/providers/${pOpenai.id}`, admin, { method: 'PATCH', body: { name: 'OpenAI (barato)' } })).json.providers.find((p) => p.id === pOpenai.id).contextWindowTokens === 272000);
+    check('ventana de contexto: absurdamente pequeña, no entera o fuera de rango → 400 con el motivo', (await call(`/system-settings/llm/providers/${pOpenai.id}`, admin, { method: 'PATCH', body: { contextWindowTokens: 100 } })).status === 400 && (await call(`/system-settings/llm/providers/${pOpenai.id}`, admin, { method: 'PATCH', body: { contextWindowTokens: 'mucho' } })).status === 400 && (await call(`/system-settings/llm/providers/${pOpenai.id}`, admin, { method: 'PATCH', body: { contextWindowTokens: 9_000_000 } })).status === 400);
+    r = await call(`/system-settings/llm/providers/${pOpenai.id}`, admin, { method: 'PATCH', body: { contextWindowTokens: 20000, maxOutputTokens: 20000 } });
+    check('los tokens reservados para la respuesta deben ser menores que la ventana → 400', r.status === 400 && /menores que la ventana/.test(r.text), r.text);
+    r = await call(`/system-settings/llm/providers/${pOpenai.id}`, admin, { method: 'PATCH', body: { contextWindowTokens: '', maxOutputTokens: null } });
+    withCtx = r.json.providers.find((p) => p.id === pOpenai.id);
+    check('vaciar los campos vuelve al valor por defecto del despliegue (null)', r.status === 200 && withCtx.contextWindowTokens === null && withCtx.maxOutputTokens === null, r.text);
+    r = await call('/system-settings/llm/providers', admin, { method: 'POST', body: { kind: 'custom', name: 'Con ventana', baseUrl: 'http://127.0.0.1:1/v1', model: 'm-ventana', contextWindowTokens: 128000, maxOutputTokens: 8000 } });
+    check('alta con ventana de contexto y tokens de salida', r.status === 201 && r.json.providers.find((p) => p.name === 'Con ventana').contextWindowTokens === 128000, r.text);
+    const ctxId = r.json.providers.find((p) => p.name === 'Con ventana').id;
+    await call(`/system-settings/llm/providers/${ctxId}`, admin, { method: 'DELETE' });
+
     // ---- borrado
     r = await call(`/system-settings/llm/providers/${pOpenai.id}`, admin, { method: 'DELETE' });
     const after = r.json.providers;
@@ -178,9 +194,9 @@ const mock = http.createServer((req, res) => {
     await q('DELETE FROM llm_providers');
     for (const p of savedProviders) {
       await q(
-        `INSERT INTO llm_providers(id, name, kind, base_url, model, api_key_encrypted, position, enabled, last_used_at, last_error, last_error_at, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [p.id, p.name, p.kind, p.base_url, p.model, p.api_key_encrypted, p.position, p.enabled, p.last_used_at, p.last_error, p.last_error_at, p.created_at, p.updated_at],
+        `INSERT INTO llm_providers(id, name, kind, base_url, model, api_key_encrypted, position, enabled, last_used_at, last_error, last_error_at, created_at, updated_at, audit_layer, context_window_tokens, max_output_tokens)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+        [p.id, p.name, p.kind, p.base_url, p.model, p.api_key_encrypted, p.position, p.enabled, p.last_used_at, p.last_error, p.last_error_at, p.created_at, p.updated_at, p.audit_layer, p.context_window_tokens, p.max_output_tokens],
       );
     }
     if (savedSettings) await q(`UPDATE system_settings SET llm_routing_mode = $1 WHERE id = true`, [savedSettings.llm_routing_mode]);

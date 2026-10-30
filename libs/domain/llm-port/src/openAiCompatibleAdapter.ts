@@ -35,6 +35,7 @@ import {
 import type { LlmPort } from './llmPort';
 import { TRIAGE_JSON_SCHEMA, buildTriagePrompt, triageResultSchema, type TriageInput, type TriageResult } from './triage';
 import { LlmContextOverflowError, isContextOverflow, type LlmUsageRecord } from './types';
+import { assertFits, compressToolOutputs, messagesChars, tokenEstimator, type ContextLimits } from './contextBudget';
 
 /**
  * Implementa LlmPort contra cualquier proveedor compatible con la API de OpenAI
@@ -57,6 +58,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
   private readonly toolReasoningEffort: string | undefined;
   private readonly onUsage: ((u: LlmUsageRecord) => void) | undefined;
   private readonly triage: { reasoningEffort?: string; maxOutputTokens?: number };
+  private readonly context: ContextLimits | undefined;
 
   constructor(
     private readonly model: string,
@@ -70,6 +72,8 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       onUsage?: (u: LlmUsageRecord) => void;
       /** Capa 2 de la auditoría: esfuerzo de razonamiento y tope de tokens de salida. */
       triage?: { reasoningEffort?: string; maxOutputTokens?: number };
+      /** Ventana de contexto del modelo y tokens reservados para la respuesta: con esto cada solicitud se comprueba ANTES de enviarla. */
+      context?: ContextLimits;
     } = {},
   ) {
     this.client = new OpenAI({ baseURL, apiKey });
@@ -78,6 +82,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     this.toolReasoningEffort = options.toolReasoningEffort;
     this.onUsage = options.onUsage;
     this.triage = options.triage ?? {};
+    this.context = options.context;
   }
 
   async reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> {
@@ -147,6 +152,11 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       }
       rounds += 1;
 
+      // Antes de cada ronda: si la conversación (con los resultados de las herramientas) ya no cabe, se resumen los resultados más
+      // viejos y grandes; si aun así no cabe, falla ya para que el llamador reduzca y reintente (sin gastar una llamada rechazada).
+      compressToolOutputs(this.model, messages, this.context);
+      const roundChars = messagesChars(messages);
+      const roundEstimate = assertFits(this.model, messages, this.context);
       let completion;
       const roundStarted = Date.now();
       try {
@@ -166,6 +176,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
         // Que la entrada no quepa NO significa que el modelo no soporte herramientas: se distingue antes.
         if (isContextOverflow(err)) {
           this.reportUsage('agentic', null, roundStarted, err);
+          tokenEstimator.learnOverflow(this.model, roundEstimate);
           throw new LlmContextOverflowError((err as Error).message);
         }
         const status = (err as { status?: number }).status;
@@ -177,7 +188,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
         console.error(`[llm-port] fallo en la ronda ${rounds} del análisis profundo (modelo "${this.model}"): ${(err as Error).message}`);
         throw err;
       }
-      this.reportUsage('agentic', completion, roundStarted);
+      this.reportUsage('agentic', completion, roundStarted, undefined, roundChars);
       promptTokens += completion.usage?.prompt_tokens ?? 0;
       completionTokens += completion.usage?.completion_tokens ?? 0;
 
@@ -315,7 +326,10 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     }
   }
 
-  private reportUsage(method: string, completion: { usage?: unknown } | null, startedAt: number, err?: unknown): void {
+  private reportUsage(method: string, completion: { usage?: unknown } | null, startedAt: number, err?: unknown, sentChars?: number): void {
+    // Con el consumo real que cobró el proveedor se corrige el estimador de tokens (aunque nadie escuche el consumo).
+    const billed = (completion?.usage as { prompt_tokens?: number } | undefined)?.prompt_tokens;
+    if (sentChars && billed) tokenEstimator.observe(this.model, sentChars, billed);
     if (!this.onUsage) return;
     try {
       const u = (completion?.usage ?? {}) as {
@@ -342,6 +356,9 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
   }
 
   private async requestCompletion(messages: ChatCompletionMessageParam[], method = 'structured', opts: CompletionOptions = {}): Promise<string> {
+    // Contar tokens ANTES de enviar: si no cabe en la ventana (menos lo reservado para la respuesta) ni se intenta.
+    const sentChars = messagesChars(messages);
+    const estimated = assertFits(this.model, messages, this.context);
     const startedAt = Date.now();
     // `json_schema` estricto cuando se pide una salida con esquema; si no, `json_object` como siempre.
     // Los parámetros de razonamiento y de tope de salida no están en los tipos del SDK para todos los modelos: se arman aparte.
@@ -370,10 +387,14 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     } catch (err) {
       this.reportUsage(method, null, startedAt, err);
       console.error(`[llm-port] fallo llamando al proveedor de inferencia (modelo "${this.model}"): ${(err as Error).message}`);
-      if (isContextOverflow(err)) throw new LlmContextOverflowError((err as Error).message);
+      if (isContextOverflow(err)) {
+        // Un rechazo real enseña el límite del modelo: no se vuelve a enviar nada igual o mayor.
+        tokenEstimator.learnOverflow(this.model, estimated);
+        throw new LlmContextOverflowError((err as Error).message);
+      }
       throw err;
     }
-    this.reportUsage(method, completion, startedAt);
+    this.reportUsage(method, completion, startedAt, undefined, sentChars);
     const content = (completion as { choices: { message?: { content?: string | null } }[] }).choices[0]?.message?.content;
     if (!content) {
       console.error(`[llm-port] el proveedor de inferencia devolvió una respuesta vacía (modelo "${this.model}")`);

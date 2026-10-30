@@ -4,7 +4,6 @@ import type { ContextFile, GitProviderPort } from '@devsentinel/git-providers';
 import { buildGithubAdapterForInstallation } from '@devsentinel/github-apps';
 import {
   AgenticReviewUnsupportedError,
-  LlmContextOverflowError,
   type AgenticReviewOptions,
   type AgenticReviewStats,
   type LlmPort,
@@ -23,11 +22,13 @@ import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
 import { RagContextService } from './ragContext.service';
 import { readLocalContextFiles } from './contextFiles';
-import { createLlmRouter, UsageSink, type UsageContext } from '../../common/llmRouter.factory';
+import { createLayerRouter, createLlmRouter, UsageSink, type UsageContext } from '../../common/llmRouter.factory';
 import { truncateDiff } from './diffUtils';
 import { ReviewToolbox, buildFileHistorySummary, buildSymbolUsages, formatPullRequests } from './reviewToolbox';
 import { Layer1Service } from '../audit/layer1.service';
-import { fitReviewInput, partialReason, type BudgetReport } from './inputBudget';
+import { fitReviewInput, partialReason, type RelevanceHints } from './inputBudget';
+import { LAYER_INPUT_CAPS, inputBudgetFor, withContextRetry, type LayerBudget } from '../../common/contextBudget';
+import { buildLayer3Input } from '../audit/compress';
 import { Layer2Service, type Layer2Outcome } from '../audit/layer2/layer2.service';
 import { applyAuditGuards, guardsFromLayer1, type AuditGuards } from '../audit/policy';
 import { insertSecretFindings, saveLayer1, saveLayer2, setAuditStage } from '../audit/store';
@@ -238,37 +239,54 @@ export class ReviewService {
               layer2: layer2Outcome,
               escalatedTo: null as string | null,
               // el triaje vio un diff recortado por tamaño: la revisión es parcial
-              partial: layer2Outcome.partial ? 'Revisión parcial: el cambio es demasiado grande y la capa 2 no vio todo el código (ver la nota del triaje). Un análisis parcial no puede aprobarse automáticamente.' : (null as string | null),
+              partial: layer2Outcome.partial ? `Revisión parcial: ${layer2Outcome.partialReason ?? 'la capa 2 no vio todo el código del cambio'}. Un análisis parcial no puede aprobarse automáticamente.` : (null as string | null),
             };
           }
 
           const escalated = layer2Outcome?.status === 'ok' && layer2Outcome.escalation.recommended;
-          if (escalated) {
+          // Quién revisa y qué recibe. La capa avanzada (Sol) NUNCA recibe otra vez todo el código si la capa 2 ya lo auditó: recibe el
+          // resumen del triaje, los hallazgos graves con su evidencia y el parche solo de los archivos que importan.
+          let reviewer: LlmPort = llm;
+          let toReview = reviewInput;
+          let hints: RelevanceHints | undefined;
+          let budget: LayerBudget;
+          if (escalated && layer1Result && layer2Outcome) {
             await this.markStage(payload, 'running_layer_3');
-            // primero: el presupuesto de contexto conserva lo del principio
-            reviewInput.retrievedContext = [{ filePath: '(triaje de la capa 2)', content: layer2Outcome!.triageSummary }, ...reviewInput.retrievedContext];
+            const compact = buildLayer3Input(reviewInput, layer1Result, layer2Outcome);
+            toReview = compact.input;
+            // si la capa 2 no vio todo el cambio, la avanzada sí tiene que ver el resto: se le conserva el parche completo (ajustado al presupuesto)
+            if (layer2Outcome.partial) toReview = { ...toReview, diff: reviewInput.diff };
+            hints = { priority: compact.priority, sensitive: compact.sensitive };
+            const l3 = await createLayerRouter('layer3', { organizationId: payload.organizationId, reviewRunId: payload.reviewRunId, repositoryId: payload.repositoryId, purpose: 'layer3', sink });
+            if (l3) {
+              reviewer = l3.router;
+              budget = await inputBudgetFor('layer3');
+            } else {
+              budget = await inputBudgetFor('general', { cap: LAYER_INPUT_CAPS.layer3 });
+            }
+          } else {
+            budget = await inputBudgetFor('general');
           }
-          // La entrada se ajusta al presupuesto de tokens ANTES de enviarla; si aun así el modelo la rechaza por tamaño, se reintenta
-          // con la mitad y luego con la cuarta parte. Un cambio enorme se revisa de forma parcial, no se cae con un 400.
-          const { reviewed, report } = await this.reviewWithinBudget(reviewInput, (fitted) =>
-            this.runLlmReview({
-              deep: config.analysis_depth === 'deep',
-              llm,
-              gitAdapter,
-              payload,
-              reviewInput: fitted,
-              checkoutPath,
-            }),
+          // La entrada se ajusta al presupuesto de tokens ANTES de enviarla (con la relación caracteres/token que ese modelo ha demostrado);
+          // si aun así se rechaza por tamaño, se reintenta con un presupuesto estrictamente menor (1 → 1/2 → 1/4). Un cambio enorme se
+          // revisa de forma parcial, no se cae con un 400.
+          const { reviewed, report } = await withContextRetry(
+            async (scale) => {
+              const { input, report: fitReport } = fitReviewInput(toReview, scale, { maxInputTokens: budget.inputTokens, model: budget.limitingModel ?? undefined, hints });
+              const out = await this.runLlmReview({ deep: config.analysis_depth === 'deep', llm: reviewer, gitAdapter, payload, reviewInput: input, checkoutPath });
+              return { reviewed: out, report: fitReport };
+            },
+            { onRetry: (next, err) => this.logger.warn(`el modelo rechazó la entrada por tamaño (${err.message.slice(0, 120)}): se reintenta con el ${Math.round(next * 100)}% del presupuesto`) },
           );
           this.logger.log(
-            `entrada del modelo: ${Math.round(report.originalChars / 1024)} KB de diff → ~${report.estimatedTokens.toLocaleString('es')} tokens${report.notes.length ? ` (${report.notes.join('; ')})` : ''}`,
+            `entrada del modelo (${budget.layer}, tope ${budget.inputTokens.toLocaleString('es')} tokens por ${budget.reason}): ${Math.round(report.originalChars / 1024)} KB de diff → ~${report.estimatedTokens.toLocaleString('es')} tokens${report.notes.length ? ` (${report.notes.join('; ')})` : ''}`,
           );
           if (report.notes.length) reviewed.analysis = { ...reviewed.analysis, note: [reviewed.analysis.note, `Ajuste por tamaño: ${report.notes.join('; ')}.`].filter(Boolean).join(' ') };
           if (escalated) {
             const why = layer2Outcome!.escalation.triggers.map((t) => t.detail).join(' · ').slice(0, 400);
             reviewed.analysis = { ...reviewed.analysis, note: `Escalado a revisión avanzada: ${why}${reviewed.analysis.note ? ` — ${reviewed.analysis.note}` : ''}` };
           }
-          return { ...reviewed, layer1: layer1Result, layer2: layer2Outcome, escalatedTo: escalated ? 'revisor general' : null, partial: partialReason(report) };
+          return { ...reviewed, layer1: layer1Result, layer2: layer2Outcome, escalatedTo: escalated ? (reviewer === llm ? 'revisor general' : 'capa 3') : null, partial: partialReason(report) ?? (escalated && layer2Outcome?.partial ? layer2Outcome.partialReason : null) };
         },
       );
 
@@ -309,25 +327,6 @@ export class ReviewService {
       }
       throw err;
     }
-  }
-
-  /** Ajusta la entrada al presupuesto de tokens y ejecuta la revisión; si el proveedor rechaza la entrada por tamaño, reintenta con
-   * la mitad y luego con la cuarta parte del presupuesto. Rechazar por tamaño no es una falla del agente (no se pausa ni se marca). */
-  private async reviewWithinBudget<T extends { analysis: AnalysisRecord }>(
-    original: ReviewDiffInput,
-    run: (fitted: ReviewDiffInput) => Promise<T>,
-  ): Promise<{ reviewed: T; report: BudgetReport }> {
-    const scales = [1, 0.5, 0.25];
-    for (let i = 0; i < scales.length; i++) {
-      const { input, report } = fitReviewInput(original, scales[i]);
-      try {
-        return { reviewed: await run(input), report };
-      } catch (err) {
-        if (!(err instanceof LlmContextOverflowError) || i === scales.length - 1) throw err;
-        this.logger.warn(`el modelo rechazó la entrada por tamaño (~${report.estimatedTokens.toLocaleString('es')} tokens): se reintenta con el ${Math.round(scales[i + 1] * 100)}% del presupuesto`);
-      }
-    }
-    throw new Error('unreachable');
   }
 
   /** Una sola pasada (estándar) o investigación con herramientas (profundo). El modo profundo NUNCA

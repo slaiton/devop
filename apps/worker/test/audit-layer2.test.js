@@ -374,6 +374,8 @@ const ownFinding = (over = {}) => ({
     row = await run(j.reviewRunId);
     check('flujo (b): cambio de autenticación → escala: primero Luna (capa 2) y luego el revisor general (Sol) con el triaje en su contexto', requests.length === 2 && requests[0].body.model === 'us.openai.gpt-5.6-luna' && requests[1].body.model === 'us.openai.gpt-5.6-sol' && /Triaje de la capa 2/.test(requests[1].body.messages[1].content), JSON.stringify(requests.map((r) => r.body.model)));
     check('flujo (b): la revisión final es la del revisor general, queda registrado el escalamiento y la etapa running_layer_3', row.summary === 'Revisión general de Sol.' && row.audit_layer2.used_as_review === false && row.audit_layer2.escalated_to === 'revisor general' && row.audit_escalation.recommended === true && /Escalado a revisión avanzada/.test(row.analysis_note) && stages.includes('running_layer_3'), JSON.stringify(stages));
+    const solPrompt = requests[1].body.messages[1].content;
+    check('flujo (b): Sol NO recibe otra vez todo el código: solo el parche de los archivos con hallazgos graves o de cambio sensible, y se le dice qué ya auditó la capa 2', /src\/auth\/login\.js/.test(solPrompt) && /src\/vuln\.py/.test(solPrompt) && !/module\.exports = \{ token \}/.test(solPrompt) && /no se reenvía: ya lo auditó la capa 2/.test(solPrompt), solPrompt.slice(0, 400));
     const inv2 = await q(`SELECT purpose FROM llm_invocations WHERE review_run_id = $1 ORDER BY purpose`, [j.reviewRunId]);
     check('flujo (b): el consumo distingue la capa 2 de la revisión general', inv2.map((r) => r.purpose).join() === 'layer2,review');
     fakeGit.getCommitDiff = async () => DIFF;

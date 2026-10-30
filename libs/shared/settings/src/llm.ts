@@ -29,6 +29,10 @@ export interface LlmProviderConfig {
   lastErrorAt: Date | null;
   /** null = agente general. */
   auditLayer: LlmAuditLayer | null;
+  /** Ventana de contexto del modelo en tokens; null = valor por defecto del despliegue. */
+  contextWindowTokens: number | null;
+  /** Tokens reservados para la respuesta; null = valor por defecto del despliegue. */
+  maxOutputTokens: number | null;
 }
 
 interface Row {
@@ -44,6 +48,8 @@ interface Row {
   last_error: string | null;
   last_error_at: Date | null;
   audit_layer: LlmAuditLayer | null;
+  context_window_tokens: number | null;
+  max_output_tokens: number | null;
 }
 
 function toConfig(row: Row): LlmProviderConfig {
@@ -60,10 +66,12 @@ function toConfig(row: Row): LlmProviderConfig {
     lastError: row.last_error,
     lastErrorAt: row.last_error_at,
     auditLayer: row.audit_layer,
+    contextWindowTokens: row.context_window_tokens,
+    maxOutputTokens: row.max_output_tokens,
   };
 }
 
-const COLUMNS = `id, name, kind, base_url, model, api_key_encrypted, position, enabled, last_used_at, last_error, last_error_at, audit_layer`;
+const COLUMNS = `id, name, kind, base_url, model, api_key_encrypted, position, enabled, last_used_at, last_error, last_error_at, audit_layer, context_window_tokens, max_output_tokens`;
 
 /** Agentes configurados, en el orden de uso (posición 1 primero). `layer`: 'general' = los que no atienden ninguna capa;
  * 'layer2' / 'layer3' = los asignados a esa capa; sin `layer`, todos. */

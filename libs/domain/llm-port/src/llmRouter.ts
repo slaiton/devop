@@ -245,6 +245,21 @@ export interface ProviderConfigLike {
   baseUrl: string;
   model: string;
   apiKey: string | null;
+  /** Ventana de contexto del modelo (tokens). Sin dato se usa LLM_DEFAULT_CONTEXT_TOKENS (272000). */
+  contextWindowTokens?: number | null;
+  /** Tokens que se reservan para la respuesta. Sin dato se usa LLM_DEFAULT_OUTPUT_TOKENS (16000). */
+  maxOutputTokens?: number | null;
+}
+
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = Number(process.env.LLM_DEFAULT_CONTEXT_TOKENS) || 272_000;
+export const DEFAULT_RESERVED_OUTPUT_TOKENS = Number(process.env.LLM_DEFAULT_OUTPUT_TOKENS) || 16_000;
+
+/** Límites de contexto de un agente (con los valores por defecto cuando no se configuraron). */
+export function contextLimitsOf(config: Pick<ProviderConfigLike, 'contextWindowTokens' | 'maxOutputTokens'>): { windowTokens: number; reservedOutputTokens: number } {
+  return {
+    windowTokens: config.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+    reservedOutputTokens: config.maxOutputTokens ?? DEFAULT_RESERVED_OUTPUT_TOKENS,
+  };
 }
 
 /** Los modelos de razonamiento de OpenAI (o1/o3/o4, gpt-5…) solo aceptan la temperatura por defecto. */
@@ -268,6 +283,7 @@ export function buildRoutedProvider(config: ProviderConfigLike, routerOptions?: 
       toolReasoningEffort: config.kind === 'bedrock' ? 'none' : undefined,
       onUsage: routerOptions?.onUsage ? (u) => routerOptions.onUsage!({ ...u, providerId: config.id, provider: config.name }) : undefined,
       triage: routerOptions?.triage,
+      context: contextLimitsOf(config),
     }),
   };
 }

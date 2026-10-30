@@ -20,6 +20,8 @@ export interface AgentProvider {
   lastErrorAt: string | null;
   /** null = agente general; si no, atiende esa capa de la auditoría y queda fuera de la rotación general. */
   auditLayer: AgentLayer;
+  contextWindowTokens: number | null;
+  maxOutputTokens: number | null;
 }
 
 export interface AgentsConfig {
@@ -97,6 +99,9 @@ interface FormState {
   kind: AgentKind;
   /** '' = general. */
   auditLayer: '' | 'layer2' | 'layer3';
+  /** '' = por defecto del despliegue. */
+  contextWindowTokens: string;
+  maxOutputTokens: string;
   name: string;
   baseUrl: string;
   model: string;
@@ -107,7 +112,7 @@ interface FormState {
 
 const emptyForm = (kind: AgentKind): FormState => {
   const p = presetOf(kind);
-  return { kind, auditLayer: '', name: p.name, baseUrl: p.baseUrl, model: p.models[0] ?? '', apiKey: '', clearApiKey: false, enabled: true };
+  return { kind, auditLayer: '', contextWindowTokens: '', maxOutputTokens: '', name: p.name, baseUrl: p.baseUrl, model: p.models[0] ?? '', apiKey: '', clearApiKey: false, enabled: true };
 };
 
 async function request<T>(url: string, method: string, body?: unknown): Promise<T> {
@@ -179,7 +184,7 @@ export function AiAgentsPanel({ initial }: { initial: AgentsConfig }) {
   }
 
   function startEdit(p: AgentProvider) {
-    setForm({ kind: p.kind, auditLayer: p.auditLayer ?? '', name: p.name, baseUrl: p.baseUrl, model: p.model, apiKey: '', clearApiKey: false, enabled: p.enabled });
+    setForm({ kind: p.kind, auditLayer: p.auditLayer ?? '', contextWindowTokens: p.contextWindowTokens ? String(p.contextWindowTokens) : '', maxOutputTokens: p.maxOutputTokens ? String(p.maxOutputTokens) : '', name: p.name, baseUrl: p.baseUrl, model: p.model, apiKey: '', clearApiKey: false, enabled: p.enabled });
     setEditing(p.id);
     setError(null);
   }
@@ -198,6 +203,8 @@ export function AiAgentsPanel({ initial }: { initial: AgentsConfig }) {
       model: form.model,
       enabled: form.enabled,
       auditLayer: form.auditLayer || null,
+      contextWindowTokens: form.contextWindowTokens.trim() || null,
+      maxOutputTokens: form.maxOutputTokens.trim() || null,
       ...(form.apiKey ? { apiKey: form.apiKey } : {}),
       ...(form.clearApiKey ? { clearApiKey: true } : {}),
     };
@@ -326,6 +333,10 @@ export function AiAgentsPanel({ initial }: { initial: AgentsConfig }) {
                   <code>{p.model}</code> · {p.baseUrl.replace(/^https?:\/\//, '')} · {p.apiKeySet ? 'clave guardada' : <span className="status-warn">sin clave</span>}
                 </div>
                 <div className="agent-meta">
+                  Contexto: {p.contextWindowTokens ? `${p.contextWindowTokens.toLocaleString('es')} tokens` : 'por defecto (272.000)'} · reserva de respuesta:{' '}
+                  {p.maxOutputTokens ? `${p.maxOutputTokens.toLocaleString('es')}` : 'por defecto (16.000)'}
+                </div>
+                <div className="agent-meta">
                   Último uso: {timeAgo(p.lastUsedAt)}
                   {p.lastError && !tests[p.id] && (!p.lastUsedAt || (p.lastErrorAt && new Date(p.lastErrorAt) > new Date(p.lastUsedAt))) && (
                     <span className="agent-error"> · ✕ falló {timeAgo(p.lastErrorAt)}: {p.lastError}</span>
@@ -405,6 +416,23 @@ export function AiAgentsPanel({ initial }: { initial: AgentsConfig }) {
               capas); si no asignas ningún agente a una capa, esa capa no corre y la auditoría queda incompleta.
             </p>
           )}
+          <p>
+            <label>
+              Ventana de contexto del modelo (tokens, opcional)
+              <input id="agent-context-window" inputMode="numeric" value={form.contextWindowTokens} onChange={(e) => setForm({ ...form, contextWindowTokens: e.target.value })} placeholder="272000 (por defecto)" />
+            </label>
+          </p>
+          <p>
+            <label>
+              Tokens reservados para la respuesta (opcional)
+              <input id="agent-max-output" inputMode="numeric" value={form.maxOutputTokens} onChange={(e) => setForm({ ...form, maxOutputTokens: e.target.value })} placeholder="16000 (por defecto)" />
+            </label>
+          </p>
+          <p className="agents-hint">
+            Cada solicitud se mide ANTES de enviarla: si la entrada estimada supera (ventana − reserva) × 0,92 no se envía; se reduce el contenido y se
+            reintenta. El valor por defecto (272.000) evita además la tarifa de contexto largo de Bedrock. Si un modelo rechaza una entrada, se aprende su
+            límite real y no se vuelve a intentar algo igual de grande.
+          </p>
           <p>
             <label>
               Nombre (el que verás en el orden y en cada análisis)

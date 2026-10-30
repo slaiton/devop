@@ -247,8 +247,8 @@ aplicación). Devuelve un JSON con **esquema estricto** que además se valida en
   presupuesto, se revisa con el agente general y la auditoría queda **incompleta** (nunca APTO).
 - **Escalamiento a la auditoría avanzada**, por reglas reproducibles y no solo por la opinión del modelo: cambios de autenticación, IAM, CI/CD,
   migraciones o pagos; recomendación del modelo; hallazgo grave confirmado *nuevo*; riesgo alto; o un conflicto con un escáner
-  (`AUDIT_ESCALATION_TAGS` cambia los tipos de cambio). Hoy la escalada la atiende el revisor general (Sol), informado del triaje; la capa 3
-  dedicada viene después.
+  (`AUDIT_ESCALATION_TAGS` cambia los tipos de cambio). La escalada la atiende el agente de la **capa 3** si hay uno asignado, o el revisor
+  general (Sol) si no; en ambos casos recibe un **resumen** del triaje y no el código completo (ver *Contexto por capa*).
 - Nada de lo que diga puede aprobar o desbloquear: la política determinista de la capa 1 sigue mandando.
 
 **Presupuesto de IA** (Configuración → Presupuesto de IA): tope mensual (50 USD por defecto), tope por auditoría (1 USD) y qué hacer al
@@ -258,7 +258,34 @@ la capa 2 se estima una cota superior de su costo y se compara con lo gastado en
 `model_prices`** — datos editables, no código; los valores iniciales salen de las fichas de modelo de Bedrock (verifícalos contra la página de
 precios y agrega una fila cuando cambien; el contexto de más de 272K tokens se cobra a otra tarifa). Un modelo sin tarifa corre igual pero no
 se puede contabilizar ni limitar (se avisa). La página de cada commit muestra el consumo por capa y su total. Variables opcionales:
-`AUDIT_L2_REASONING` (esfuerzo de razonamiento, `low`), `AUDIT_L2_MAX_OUTPUT_TOKENS` (8000), `AUDIT_L2_MAX_DIFF_CHARS` (60000).
+`AUDIT_L2_REASONING` (esfuerzo de razonamiento, `low`), `AUDIT_L2_MAX_OUTPUT_TOKENS` (8000).
+
+### Contexto por capa (que ningún modelo reciba más de lo que cabe)
+
+Un modelo de Bedrock rechaza con `400 Context window exceeded` lo que supere su ventana, y por encima de 272K tokens cobra el doble. En vez de
+usar un modelo con más ventana, cada capa recibe **solo lo que necesita**:
+
+| Capa | Qué recibe | Tope de entrada |
+|---|---|---|
+| 1 · escáneres | no usa IA | — |
+| 2 · triaje (Luna) | hallazgos de la capa 1 con su referencia, fragmentos de código de esos hallazgos, usos de símbolos y el diff **dividido en partes** que caben | `AUDIT_L2_MAX_INPUT_TOKENS` (100.000 por llamada) |
+| 3 · avanzada (Sol) | resumen ejecutivo del triaje, hallazgos graves con su evidencia, conclusiones y motivos de escalamiento, y el parche **solo** de los archivos con hallazgos graves o de cambio sensible. **Nunca** el código completo si la capa 2 ya lo auditó | `AUDIT_L3_MAX_INPUT_TOKENS` (60.000) |
+| revisión general | la entrada completa, ajustada al presupuesto | `LLM_MAX_INPUT_TOKENS` (150.000) |
+
+El tope efectivo es el menor entre el de la capa y la ventana real del agente. Controles:
+- **Contador de tokens antes de cada solicitud.** No hay tokenizador propio: se parte de 3 caracteres por token (conservador) y la relación se
+  corrige con el consumo real (`prompt_tokens`) que reporta el proveedor. Si lo estimado no cabe, la solicitud **no se envía**.
+- **Presupuesto con reserva para la respuesta.** Por agente (Configuración → Agentes de IA → *Ventana de contexto* y *Tokens reservados para la
+  respuesta*; vacíos = `LLM_DEFAULT_CONTEXT_TOKENS` 272000 y `LLM_DEFAULT_OUTPUT_TOKENS` 16000): entrada máxima = (ventana − reserva) × 0,92.
+- **Fragmentación lógica.** Un archivo gigante se parte por *hunks* (cada parte repite la cabecera del archivo) y un cambio grande por grupos de
+  archivos. La capa 2 analiza cada parte por separado (máximo `AUDIT_L2_MAX_CHUNKS`, 4) y **une** los resultados tomando siempre lo más estricto.
+- **Compresión entre capas.** La capa 3 recibe el resumen de la 2, no sus entradas; la capa 1 aporta métricas. En el modo profundo, los resultados
+  de herramientas más antiguos se resumen antes de que la conversación supere el presupuesto.
+- **Relevancia.** Entra primero lo que toca hallazgos graves, luego los cambios sensibles (auth, IAM, CI/CD, migraciones, pagos), luego el código;
+  pruebas y documentación al final; lockfiles y generados se resumen en una línea.
+- **Reintento inteligente.** Si aun así se rechaza por tamaño, se reintenta con 1/2 y luego 1/4 del presupuesto (nunca la misma solicitud), se
+  **aprende el límite real** del modelo y el rechazo no pausa ni marca como caído al agente. Si no alcanza el presupuesto de dinero para todas las
+  partes, se hacen las que caben y la revisión queda **parcial**. Lo que no se analizó se dice, y una revisión parcial nunca puede ser APTO.
 
 ### Commits muy grandes: límites y rendimiento
 

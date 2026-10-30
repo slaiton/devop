@@ -27,6 +27,10 @@ export interface LlmProviderInput {
   enabled?: boolean;
   /** null / '' / 'general' = agente general; 'layer2' | 'layer3' = atiende esa capa de la auditoría. */
   auditLayer?: string | null;
+  /** Ventana de contexto en tokens (8.000 a 4.000.000); null/'' = por defecto. */
+  contextWindowTokens?: number | string | null;
+  /** Tokens reservados para la respuesta (256 a 1.000.000); null/'' = por defecto. */
+  maxOutputTokens?: number | string | null;
 }
 
 const TEST_TIMEOUT_MS = 25_000;
@@ -44,6 +48,15 @@ function cleanLayer(raw: unknown): LlmAuditLayer | null {
     throw new BadRequestException(`auditLayer debe ser vacío (general) o uno de: ${LLM_AUDIT_LAYERS.join(', ')}`);
   }
   return raw as LlmAuditLayer;
+}
+
+function cleanTokens(raw: unknown, label: string, min: number, max: number): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = typeof raw === 'string' ? Number(raw.replace(/[.\s]/g, '').replace(',', '.')) : raw;
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < min || n > max) {
+    throw new BadRequestException(`${label} debe ser un número entero de tokens entre ${min} y ${max} (o vacío para usar el valor por defecto)`);
+  }
+  return n;
 }
 
 function cleanBaseUrl(raw: unknown): string {
@@ -80,6 +93,8 @@ export function toMaskedProvider(p: LlmProviderConfig) {
     lastError: p.lastError,
     lastErrorAt: p.lastErrorAt,
     auditLayer: p.auditLayer,
+    contextWindowTokens: p.contextWindowTokens,
+    maxOutputTokens: p.maxOutputTokens,
   };
 }
 
@@ -108,11 +123,16 @@ export class LlmProvidersService {
     const model = cleanText(input.model, 'el modelo', 120);
     const apiKey = input.apiKey?.trim() || null;
     const auditLayer = cleanLayer(input.auditLayer);
+    const contextWindowTokens = cleanTokens(input.contextWindowTokens, 'la ventana de contexto', 8_000, 4_000_000);
+    const maxOutputTokens = cleanTokens(input.maxOutputTokens, 'los tokens de salida reservados', 256, 1_000_000);
+    if (contextWindowTokens !== null && maxOutputTokens !== null && maxOutputTokens >= contextWindowTokens) {
+      throw new BadRequestException('los tokens reservados para la respuesta deben ser menores que la ventana de contexto');
+    }
     const pool = getPool();
     await pool.query(
-      `INSERT INTO llm_providers (name, kind, base_url, model, api_key_encrypted, enabled, position, audit_layer)
-       VALUES ($1, $2, $3, $4, $5, $6, COALESCE((SELECT max(position) FROM llm_providers), 0) + 1, $7)`,
-      [name, kind, baseUrl, model, apiKey ? encrypt(apiKey) : null, input.enabled ?? true, auditLayer],
+      `INSERT INTO llm_providers (name, kind, base_url, model, api_key_encrypted, enabled, position, audit_layer, context_window_tokens, max_output_tokens)
+       VALUES ($1, $2, $3, $4, $5, $6, COALESCE((SELECT max(position) FROM llm_providers), 0) + 1, $7, $8, $9)`,
+      [name, kind, baseUrl, model, apiKey ? encrypt(apiKey) : null, input.enabled ?? true, auditLayer, contextWindowTokens, maxOutputTokens],
     );
     return this.get();
   }
@@ -126,6 +146,11 @@ export class LlmProvidersService {
     const model = input.model !== undefined ? cleanText(input.model, 'el modelo', 120) : current.model;
     const enabled = input.enabled !== undefined ? Boolean(input.enabled) : current.enabled;
     const auditLayer = input.auditLayer !== undefined ? cleanLayer(input.auditLayer) : current.auditLayer;
+    const contextWindowTokens = input.contextWindowTokens !== undefined ? cleanTokens(input.contextWindowTokens, 'la ventana de contexto', 8_000, 4_000_000) : current.contextWindowTokens;
+    const maxOutputTokens = input.maxOutputTokens !== undefined ? cleanTokens(input.maxOutputTokens, 'los tokens de salida reservados', 256, 1_000_000) : current.maxOutputTokens;
+    if (contextWindowTokens !== null && maxOutputTokens !== null && maxOutputTokens >= contextWindowTokens) {
+      throw new BadRequestException('los tokens reservados para la respuesta deben ser menores que la ventana de contexto');
+    }
     let keyEncrypted: string | null | undefined; // undefined = no tocar
     if (input.clearApiKey) keyEncrypted = null;
     else if (input.apiKey && input.apiKey.trim()) keyEncrypted = encrypt(input.apiKey.trim());
@@ -135,9 +160,11 @@ export class LlmProvidersService {
        SET name = $2, kind = $3, base_url = $4, model = $5, enabled = $6,
            api_key_encrypted = CASE WHEN $7::boolean THEN $8 ELSE api_key_encrypted END,
            audit_layer = $9,
+           context_window_tokens = $10,
+           max_output_tokens = $11,
            updated_at = now()
        WHERE id = $1`,
-      [id, name, kind, baseUrl, model, enabled, keyEncrypted !== undefined, keyEncrypted ?? null, auditLayer],
+      [id, name, kind, baseUrl, model, enabled, keyEncrypted !== undefined, keyEncrypted ?? null, auditLayer, contextWindowTokens, maxOutputTokens],
     );
     return this.get();
   }

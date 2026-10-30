@@ -15,7 +15,7 @@ const http = require('http');
 const path = require('path');
 const { Pool } = require('pg');
 const { encrypt } = require('@devsentinel/settings');
-const { clearLlmCooldowns, LlmContextOverflowError, AgenticReviewUnsupportedError, OpenAiCompatibleLlmAdapter, buildLlmRouter, isContextOverflow } = require('@devsentinel/llm-port');
+const { clearLlmCooldowns, LlmContextOverflowError, AgenticReviewUnsupportedError, OpenAiCompatibleLlmAdapter, buildLlmRouter, isContextOverflow, tokenEstimator } = require('@devsentinel/llm-port');
 
 const DIST = '/repo/apps/worker/dist';
 const { fitReviewInput, fitDiff, isLowValueFile, partialReason, INPUT_LIMITS } = require(`${DIST}/modules/review/inputBudget.js`);
@@ -82,7 +82,7 @@ const REVIEW = { resultado: 'APTO', quality_score: 90, risk_level: 'low', resume
   r = fitReviewInput(baseInput(huge));
   check(`un diff de ${(huge.length / 1048576).toFixed(1)} MB se ajusta al presupuesto (≈${INPUT_LIMITS.maxInputTokens.toLocaleString('es')} tokens) en milisegundos`, r.report.estimatedTokens <= INPUT_LIMITS.maxInputTokens && Date.now() - t0 < 2000 && r.input.diff.length < huge.length / 3, `${r.report.estimatedTokens} tokens, ${Date.now() - t0} ms`);
   check('lo que no cabe se OMITE ENTERO (no se parte un archivo a la mitad sin avisar), con la lista de omitidos y marcado como parcial', r.report.omittedFiles.length > 0 && r.report.truncatedFiles.length > 0 && r.report.partial === true && /NO aparecen arriba/.test(r.input.diff) && r.input.diff.includes(r.report.omittedFiles[0]));
-  check('los parches gigantes de un solo archivo se recortan con aviso y no acaparan el presupuesto', r.report.truncatedFiles.length > 0 && /parche recortado: 2505 líneas/.test(r.input.diff));
+  check('los parches gigantes de un solo archivo se recortan con aviso y no acaparan el presupuesto', r.report.truncatedFiles.length > 0 && /hunk recortado: [0-9]+ líneas/.test(r.input.diff));
   check('la razón del análisis parcial se redacta para el usuario y dice que no puede aprobarse sola', /Revisión parcial/.test(partialReason(r.report)) && /no puede aprobarse automáticamente/.test(partialReason(r.report)));
 
   const r2 = fitReviewInput(baseInput(huge), 0.5);
@@ -126,6 +126,7 @@ const REVIEW = { resultado: 'APTO', quality_score: 90, risk_level: 'low', resume
   check('cada intento queda marcado inputTooLarge para que no se anote como error del agente', attempts.length >= 2 && attempts.every((a) => a.inputTooLarge === true && a.ok === false));
 
   CONTEXT_CHARS = 300_000;
+  tokenEstimator.reset(); // lo aprendido en las pruebas anteriores (límites y relación caracteres/token) no debe contaminar el flujo completo
 
   // ================================================================== C) flujo completo con un commit enorme
   const owner = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL || process.env.DATABASE_URL });
