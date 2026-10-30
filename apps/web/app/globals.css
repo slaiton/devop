@@ -2008,3 +2008,119 @@ tbody tr:hover {
   width: 100%;
   min-width: 0;
 }
+
+/* ---- Auditoría por capas: capa 1 (escáneres) ---- */
+.scan {
+  margin: 0 0 1.5rem;
+}
+.scan-banner {
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+.scan-banner-bad {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.scan-banner-warn {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+.scan-table-wrap {
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+.scan-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.scan-table th,
+.scan-table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.scan-mono {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  white-space: nowrap;
+}
+.scan-note {
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+.scan-status {
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.scan-status-ok {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.scan-status-skipped {
+  background: var(--surface-2, var(--surface));
+  color: var(--ink-muted);
+}
+.scan-status-failed,
+.scan-status-timeout,
+.scan-status-not_installed {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.scan-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+  display: grid;
+  /* minmax(0, 1fr): una línea larga de evidencia no ensancha la lista; el <pre> desliza por dentro. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.6rem;
+}
+.scan-item {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.scan-item p {
+  margin: 0.35rem 0 0;
+}
+.scan-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+}
+.scan-tag {
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+}
+.scan-tag-new {
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 700;
+}
+.scan-where {
+  margin-top: 0.25rem;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+.scan-evidence {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.7rem;
+  background: var(--surface-2, var(--bg));
+  border-radius: var(--radius-sm, 4px);
+  font-size: 0.8rem;
+  overflow-x: auto;
+}

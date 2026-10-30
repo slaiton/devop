@@ -1,4 +1,6 @@
 import type { PoolClient } from 'pg';
+import { applyAuditGuards } from '../modules/audit/policy';
+import { loadAuditGuards } from '../modules/audit/store';
 
 export type GateDecision = 'apto' | 'requiere_revision' | 'no_apto';
 
@@ -30,6 +32,21 @@ export async function loadGateConfig(client: PoolClient, organizationId: string,
  * (`awaiting_clarification`) NO bloquean, pero impiden aprobar el commit: mientras haya preguntas sin resolver el
  * resultado es, como mucho, REQUIERE_REVISIÓN. Un riesgo alto que solo se debe a preguntas tampoco se vuelve NO APTO. */
 export async function recomputeGateDecision(
+  client: PoolClient,
+  reviewRunId: string,
+  riskLevel: 'low' | 'medium' | 'high',
+  qualityScore: number,
+  config: GateConfig,
+): Promise<GateDecision> {
+  const decision = await decideFromFindings(client, reviewRunId, riskLevel, qualityScore, config);
+  // Lo que la capa 1 de la auditoría le impone al veredicto (secretos nuevos, cobertura incompleta) no se levanta al
+  // recalcular: ni una aclaración ni una reconsideración pueden dejar APTO algo que los escáneres obligatorios bloquean.
+  // Sin capa 1 activa en la revisión no hay guardas y el resultado no cambia.
+  const guards = await loadAuditGuards(client, reviewRunId);
+  return applyAuditGuards(decision, guards, config).decision;
+}
+
+async function decideFromFindings(
   client: PoolClient,
   reviewRunId: string,
   riskLevel: 'low' | 'medium' | 'high',

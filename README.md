@@ -188,6 +188,44 @@ acepta el modelo en tu cuenta (salida estructurada, herramientas, tokens de uso)
 Los agentes son globales: si Sol es el único agente activo, **todos** los repos se analizan con Sol (unos 4 USD por millón de tokens
 de entrada y 20 USD por millón de salida). El agente Bedrock no envía `temperature` ni `response_format: json_object`.
 
+### Auditoría por capas — capa 1: escáneres deterministas
+
+Se activa por repositorio en **Configuración → Auditoría por capas** (apagada por defecto: ningún repo cambia hasta que la actives).
+Antes de la IA corren, sin gastar tokens, solo los escáneres que **aplican** a lo que hay en el repo:
+
+| Escáner | Aplica si el repo tiene | Qué busca |
+|---|---|---|
+| Gitleaks | siempre | secretos y credenciales |
+| Semgrep | código fuente de un lenguaje soportado | patrones inseguros y vulnerabilidades |
+| Trivy | lockfiles o manifiestos de dependencias | CVE en dependencias |
+| Checkov | Terraform, CloudFormation, Kubernetes, Helm o workflows de GitHub Actions | malas configuraciones de IaC |
+| Hadolint | Dockerfiles | malas prácticas en imágenes |
+
+- **Versiones controladas**: cada imagen se ejecuta por *digest* (ver `apps/worker/src/modules/audit/scanners.ts`), no por `latest`;
+  `AUDIT_IMAGE_<HERRAMIENTA>` la reemplaza (queda registrado). Las reglas de Semgrep (registro) y la base de Trivy cambian con el tiempo:
+  se muestran como "no fijadas". Cada ejecución guarda versión, digest, reglas, duración y estado.
+- **Aislados**: usuario sin privilegios, sistema de archivos raíz y repo en solo lectura, sin *capabilities*, sin escalada, límites de
+  CPU, memoria y tiempo; sin red salvo Semgrep (reglas) y Trivy (su base). Corren desde un directorio vacío, no desde el repo.
+- **El repo no puede cambiar las reglas**: sus `.semgrepignore`, `.trivyignore`, `.gitleaks.toml`, `.checkov.yaml`, `.hadolint.yaml`… se
+  retiran del checkout y se avisan; `nosemgrep` y `gitleaks:allow` se ignoran. Las directivas `checkov:skip` y `hadolint ignore`, que no
+  se pueden desactivar, se cuentan y se muestran.
+- **Normalizados y sin duplicados**: un esquema común (herramienta, regla, severidad, archivo, líneas, CVE, evidencia, huella). La huella se
+  calcula sobre el contenido, no la línea: reconoce el mismo problema entre commits. Cada hallazgo es **nuevo** (en líneas que el diff
+  agrega) o **preexistente**, y **confirmado** o **pendiente de validación**.
+- **Sin secretos en ningún lado**: Gitleaks corre con `--redact`; los secretos no llevan evidencia; el resto pasa por una redacción de respaldo.
+- **Una herramienta que no corre no es "sin hallazgos"**: si un escáner obligatorio y aplicable falla, no está disponible o se pasa de
+  tiempo, la auditoría queda **incompleta** (visible en la página del commit y en el check de GitHub) y **nunca sale APTO**. También se comprueba que el contenedor ve el repo clonado.
+- **Política determinista** (solo endurece, nunca afloja): un secreto *nuevo* bloquea (si `block_on_secret`) aunque el modelo diga APTO. Se
+  respeta al recalcular tras una aclaración o reconsideración. `review_runs.audit_stage` guarda la etapa de ejecución
+  (`running_layer_1` … `completed`/`failed`), separada del resultado.
+
+Opcionales: `AUDIT_SCANNER_CONCURRENCY` (2), `AUDIT_OPTIONAL_SCANNERS=hadolint,checkov` (los que no vuelven incompleta la auditoría si fallan),
+`AUDIT_SEMGREP_CONFIGS` (por defecto `p/default,p/owasp-top-ten`), `WORKSPACE_VOLUME`. Herramientas que ejecutan código del repo (PHPStan,
+ESLint con plugins, PHPUnit…) **no** están incluidas: requerirían un entorno aislado y un permiso explícito por repo.
+
+Las primeras ejecuciones descargan las imágenes (Semgrep pesa ~1,5 GB); para precargarlas en el servidor:
+`docker pull <imagen>@sha256:…` con los digests de `scanners.ts`.
+
 ### Análisis estándar y profundo
 
 Cada repositorio tiene, en **Configuración**, su **profundidad del análisis**:

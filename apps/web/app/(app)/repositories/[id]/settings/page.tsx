@@ -10,6 +10,7 @@ interface RepoSettings {
   auto_merge_on_green: boolean;
   ignored_push_branches: string[];
   analysis_depth: 'standard' | 'deep';
+  audit_layer1: boolean;
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -47,6 +48,7 @@ export default async function RepositorySettingsTab({ params }: { params: Promis
       autoMergeOnGreen={settings.auto_merge_on_green}
       ignoredPushBranches={settings.ignored_push_branches}
       analysisDepth={settings.analysis_depth}
+      auditLayer1={settings.audit_layer1}
     />
   );
 }

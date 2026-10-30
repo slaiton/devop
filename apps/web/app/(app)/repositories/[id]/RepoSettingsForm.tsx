@@ -12,6 +12,7 @@ export function RepoSettingsForm({
   autoMergeOnGreen,
   ignoredPushBranches,
   analysisDepth,
+  auditLayer1,
 }: {
   repositoryId: string;
   promotionSourceBranch: string;
@@ -21,6 +22,7 @@ export function RepoSettingsForm({
   autoMergeOnGreen: boolean;
   ignoredPushBranches: string[];
   analysisDepth: 'standard' | 'deep';
+  auditLayer1: boolean;
 }) {
   const router = useRouter();
   const [sourceBranch, setSourceBranch] = useState(promotionSourceBranch);
@@ -30,6 +32,7 @@ export function RepoSettingsForm({
   const [autoMerge, setAutoMerge] = useState(autoMergeOnGreen);
   const [ignoredBranches, setIgnoredBranches] = useState(ignoredPushBranches.join(', '));
   const [depth, setDepth] = useState<'standard' | 'deep'>(analysisDepth);
+  const [layer1, setLayer1] = useState(auditLayer1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -50,6 +53,7 @@ export function RepoSettingsForm({
           notifyAuthorOnPush: notifyAuthor,
           autoMergeOnGreen: autoMerge,
           analysisDepth: depth,
+          auditLayer1: layer1,
           ignoredPushBranches: ignoredBranches
             .split(',')
             .map((b) => b.trim())
@@ -91,6 +95,20 @@ export function RepoSettingsForm({
               La IA investiga antes de opinar: lee archivos completos, busca dónde se usa lo que cambió, revisa el historial de cada
               archivo y el contexto del Pull Request. Tarda más y gasta más tokens; si el modelo no soporta herramientas, se analiza en
               modo estándar y se avisa.
+            </small>
+          </span>
+        </label>
+      </fieldset>
+      <fieldset className="depth-picker">
+        <legend>Auditoría por capas</legend>
+        <label className="depth-option">
+          <input type="checkbox" checked={layer1} onChange={(e) => setLayer1(e.target.checked)} />
+          <span>
+            <strong>Capa 1: escáneres deterministas</strong>
+            <small>
+              Antes de la IA corren, aislados y con versiones fijas, solo los escáneres que aplican a este repo: Gitleaks (secretos), Semgrep
+              (código), Trivy (dependencias), Checkov (Terraform/IaC) y Hadolint (Dockerfile). Un secreto nuevo bloquea siempre, y si algún
+              escáner obligatorio no termina bien la auditoría queda <em>incompleta</em> y nunca sale APTO.
             </small>
           </span>
         </label>

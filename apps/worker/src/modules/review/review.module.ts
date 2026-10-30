@@ -5,11 +5,11 @@ import { ReviewProcessor } from './review.processor';
 import { ReviewService } from './review.service';
 import { RepoCheckoutService } from './repoCheckout.service';
 import { StaticAnalysisService } from './staticAnalysis.service';
-import { SandboxRunnerService } from './sandboxRunner.service';
+import { AuditModule } from '../audit/audit.module';
 import { RagContextService } from './ragContext.service';
 
 @Module({
-  imports: [BullModule.registerQueue({ name: REVIEW_QUEUE_NAME })],
-  providers: [ReviewProcessor, ReviewService, RepoCheckoutService, StaticAnalysisService, SandboxRunnerService, RagContextService],
+  imports: [BullModule.registerQueue({ name: REVIEW_QUEUE_NAME }), AuditModule],
+  providers: [ReviewProcessor, ReviewService, RepoCheckoutService, StaticAnalysisService, RagContextService],
 })
 export class ReviewModule {}

@@ -11,6 +11,7 @@ import {
   type ProjectProfile,
   type ReviewDiffInput,
   type ReviewResult,
+  type StaticAnalysisFinding,
   type ToolTraceEntry,
 } from '@devsentinel/llm-port';
 import { sendEmail } from '@devsentinel/settings';
@@ -24,6 +25,11 @@ import { readLocalContextFiles } from './contextFiles';
 import { createLlmRouter } from '../../common/llmRouter.factory';
 import { truncateDiff } from './diffUtils';
 import { ReviewToolbox, buildFileHistorySummary, buildSymbolUsages, formatPullRequests } from './reviewToolbox';
+import { Layer1Service } from '../audit/layer1.service';
+import { applyAuditGuards, guardsFromLayer1, type AuditGuards } from '../audit/policy';
+import { insertSecretFindings, saveLayer1, setAuditStage } from '../audit/store';
+import { SEVERITY_ORDER } from '../audit/normalize';
+import type { Layer1Result } from '../audit/types';
 
 interface QualityGateConfig {
   min_coverage_pct: number;
@@ -31,6 +37,8 @@ interface QualityGateConfig {
   block_on_secret: boolean;
   /** 'deep' = el revisor investiga el repo con herramientas; ausente/'standard' = una sola pasada. */
   analysis_depth?: 'standard' | 'deep';
+  /** Auditoría por capas, capa 1: escáneres deterministas con cobertura y política propias (ver migración 0040). */
+  audit_layer1?: boolean;
 }
 
 const DEFAULT_GATE_CONFIG: QualityGateConfig = {
@@ -79,6 +87,7 @@ export class ReviewService {
     private readonly checkout: RepoCheckoutService,
     private readonly staticAnalysis: StaticAnalysisService,
     private readonly ragContext: RagContextService,
+    private readonly layer1: Layer1Service,
   ) {}
 
   /** Construye el adapter de GitHub (credenciales de la App dueña de esta instalación,
@@ -136,7 +145,7 @@ export class ReviewService {
 
       // La llamada al modelo ocurre DENTRO del checkout: en modo profundo el revisor lee archivos,
       // busca y consulta el historial sobre ese clon, que se borra al terminar el callback.
-      const { result, analysis } = await this.checkout.withCheckout(
+      const { result, analysis, layer1 } = await this.checkout.withCheckout(
         {
           owner: payload.owner,
           repo: payload.repo,
@@ -144,7 +153,18 @@ export class ReviewService {
           installationToken,
         },
         async (checkoutPath) => {
-          const staticFindings = await this.staticAnalysis.run(checkoutPath);
+          // Con la auditoría por capas activa, los escáneres de la capa 1 reemplazan al análisis estático de siempre:
+          // más herramientas, cobertura explícita y hallazgos normalizados. Sin ella, todo funciona como antes.
+          let layer1Result: Layer1Result | null = null;
+          let staticFindings: StaticAnalysisFinding[];
+          if (config.audit_layer1) {
+            await this.markStage(payload, 'running_layer_1');
+            layer1Result = await this.layer1.run(checkoutPath, diff);
+            staticFindings = layer1ToStaticFindings(layer1Result);
+            await this.markStage(payload, 'running_layer_2');
+          } else {
+            staticFindings = await this.staticAnalysis.run(checkoutPath);
+          }
           const retrievedContext = await this.ragContext.indexAndRetrieve(
             payload.organizationId,
             payload.repositoryId,
@@ -176,7 +196,7 @@ export class ReviewService {
             recentCommits,
             analyzedFiles,
           };
-          return this.runLlmReview({
+          const reviewed = await this.runLlmReview({
             deep: config.analysis_depth === 'deep',
             llm,
             gitAdapter,
@@ -184,13 +204,22 @@ export class ReviewService {
             reviewInput,
             checkoutPath,
           });
+          return { ...reviewed, layer1: layer1Result };
         },
       );
 
-      const gateDecision = this.evaluateGateDecision(config, result);
+      let gateDecision = this.evaluateGateDecision(config, result);
+      // La política de la capa 1 solo puede endurecer el veredicto (secretos nuevos, cobertura incompleta).
+      let audit: AuditOutcome | null = null;
+      if (layer1) {
+        const guards = guardsFromLayer1(layer1);
+        const applied = applyAuditGuards(gateDecision, guards, config);
+        gateDecision = applied.decision;
+        audit = { layer1, guards, reasons: applied.reasons };
+      }
 
-      await this.persistResult(payload, result, gateDecision, analyzedFiles, analysis, llm.reviewUsage());
-      await this.publishToGithub(gitAdapter, payload, result, gateDecision);
+      await this.persistResult(payload, result, gateDecision, analyzedFiles, analysis, llm.reviewUsage(), audit);
+      await this.publishToGithub(gitAdapter, payload, result, gateDecision, audit?.reasons ?? []);
       await this.syncFindingsIssue(gitAdapter, payload, result, gateDecision);
       await this.maybeAutoCreatePullRequest(gitAdapter, payload, result, gateDecision);
       await this.notifyAuthorOnPush(gitAdapter, payload, result, gateDecision);
@@ -453,6 +482,7 @@ export class ReviewService {
     analyzedFiles: string[],
     analysis: AnalysisRecord,
     usage?: { provider: string | null; model: string | null; failovers: unknown[] },
+    audit: AuditOutcome | null = null,
   ): Promise<void> {
     await withTenant(payload.organizationId, async (client) => {
       // Idempotente ante reintentos: si un intento anterior llegó a guardar hallazgos
@@ -527,6 +557,12 @@ export class ReviewService {
           );
         }
       }
+
+      if (audit) {
+        await saveLayer1(client, payload.organizationId, payload.reviewRunId, audit.layer1, audit.guards, audit.reasons);
+        // Los secretos que bloquean también quedan como hallazgos (issue de seguimiento, avisos y página del commit).
+        if (gateDecision === 'no_apto') await insertSecretFindings(client, payload.organizationId, payload.reviewRunId, audit.layer1);
+      }
     });
   }
 
@@ -535,7 +571,9 @@ export class ReviewService {
     payload: ReviewJobPayload,
     result: ReviewResult,
     gateDecision: GateDecision,
+    auditReasons: string[] = [],
   ): Promise<void> {
+    const auditNote = auditReasons.length > 0 ? '\n\n' + auditReasons.map((r) => `- ⚠ ${r}`).join('\n') : '';
     if (payload.pullNumber) {
       for (const finding of result.findings) {
         if (!finding.line_start) continue;
@@ -565,7 +603,7 @@ export class ReviewService {
           `**Quality score:** ${result.quality_score}/100`,
           `**Risk level:** ${result.risk_level}`,
           '',
-          result.resumen_ejecutivo,
+          `${result.resumen_ejecutivo}${auditNote}`,
         ].join('\n'),
       });
     }
@@ -585,7 +623,7 @@ export class ReviewService {
       commitSha: payload.commitSha,
       conclusion,
       title,
-      summary: result.resumen_ejecutivo,
+      summary: `${result.resumen_ejecutivo}${auditNote}`,
     });
   }
 
@@ -927,7 +965,7 @@ export class ReviewService {
   private async getQualityGateConfig(organizationId: string, repositoryId: string): Promise<QualityGateConfig> {
     return withTenant(organizationId, async (client) => {
       const { rows } = await client.query(
-        `SELECT min_coverage_pct, block_on_risk_level, block_on_secret, analysis_depth
+        `SELECT min_coverage_pct, block_on_risk_level, block_on_secret, analysis_depth, audit_layer1
          FROM quality_gate_configs
          WHERE organization_id = $1 AND (repository_id = $2 OR repository_id IS NULL)
          ORDER BY repository_id NULLS LAST
@@ -938,10 +976,15 @@ export class ReviewService {
     });
   }
 
+  private async markStage(payload: ReviewJobPayload, stage: 'running_layer_1' | 'running_layer_2'): Promise<void> {
+    await withTenant(payload.organizationId, (client) => setAuditStage(client, payload.reviewRunId, stage));
+  }
+
   private async markFailed(payload: ReviewJobPayload, message: string): Promise<void> {
     await withTenant(payload.organizationId, async (client) => {
       await client.query(
-        `UPDATE review_runs SET status = 'failed', error_message = $1, completed_at = now() WHERE id = $2`,
+        `UPDATE review_runs SET status = 'failed', error_message = $1, completed_at = now(),
+           audit_stage = CASE WHEN audit_stage IS NOT NULL THEN 'failed' ELSE NULL END WHERE id = $2`,
         [message, payload.reviewRunId],
       );
     });
@@ -971,4 +1014,29 @@ function extractAnalyzedFiles(diff: string): string[] {
     if (path && path !== '/dev/null') files.add(path);
   }
   return Array.from(files);
+}
+
+/** Lo que la capa 1 le aporta a una revisión: sus resultados, las guardas que impone y los motivos (para mostrarlos). */
+interface AuditOutcome {
+  layer1: Layer1Result;
+  guards: AuditGuards;
+  reasons: string[];
+}
+
+const MAX_STATIC_FINDINGS_FOR_PROMPT = 60;
+
+/** Los hallazgos de la capa 1 como evidencia para el modelo: los más graves primero, con el dato de si son nuevos en este
+ * cambio, sin evidencia de código (los secretos nunca llevan valor) y con un tope para no gastar tokens de más. */
+function layer1ToStaticFindings(result: Layer1Result): StaticAnalysisFinding[] {
+  return [...result.findings]
+    .sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || Number(b.baseline === 'new') - Number(a.baseline === 'new'))
+    .slice(0, MAX_STATIC_FINDINGS_FOR_PROMPT)
+    .map((f) => ({
+      tool: f.tool,
+      ruleId: f.ruleId,
+      filePath: f.filePath,
+      line: f.lineStart,
+      message: `[${f.baseline === 'new' ? 'nuevo en este cambio' : f.baseline === 'preexisting' ? 'preexistente' : 'origen desconocido'}] ${f.message}`,
+      severity: f.severity,
+    }));
 }

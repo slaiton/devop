@@ -15,6 +15,7 @@ interface UpdateRepositorySettingsBody {
   autoMergeOnGreen?: boolean;
   ignoredPushBranches?: string[];
   analysisDepth?: string;
+  auditLayer1?: boolean;
 }
 
 interface UpdateProjectProfileBody {

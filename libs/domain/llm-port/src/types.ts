@@ -60,7 +60,7 @@ export type Finding = z.infer<typeof findingSchema>;
 export type ReviewResult = z.infer<typeof reviewResultSchema>;
 
 export interface StaticAnalysisFinding {
-  tool: 'semgrep' | 'gitleaks';
+  tool: 'semgrep' | 'gitleaks' | 'trivy' | 'checkov' | 'hadolint';
   ruleId: string;
   filePath: string;
   line?: number;

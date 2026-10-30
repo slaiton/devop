@@ -178,4 +178,7 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  # Nombre explícito: el sandbox monta este volumen por nombre (ver SandboxRunnerService). Sin `name`, compose lo
+  # prefija con el nombre del proyecto y los escáneres terminarían viendo un volumen vacío.
   devsentinel_workspace:
+    name: devsentinel_workspace

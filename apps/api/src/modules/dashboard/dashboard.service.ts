@@ -119,7 +119,8 @@ export class DashboardService {
                 COALESCE(qgc.notify_author_on_push, true) AS notify_author_on_push,
                 COALESCE(qgc.auto_merge_on_green, false) AS auto_merge_on_green,
                 COALESCE(qgc.ignored_push_branches, ARRAY[r.default_branch]) AS ignored_push_branches,
-                COALESCE(qgc.analysis_depth, 'standard') AS analysis_depth
+                COALESCE(qgc.analysis_depth, 'standard') AS analysis_depth,
+                COALESCE(qgc.audit_layer1, false) AS audit_layer1
          FROM repositories r
          LEFT JOIN quality_gate_configs qgc
            ON qgc.organization_id = r.organization_id AND qgc.repository_id = r.id
@@ -142,8 +143,12 @@ export class DashboardService {
       autoMergeOnGreen?: boolean;
       ignoredPushBranches?: string[];
       analysisDepth?: string;
+      auditLayer1?: boolean;
     },
   ) {
+    if (settings.auditLayer1 !== undefined && typeof settings.auditLayer1 !== 'boolean') {
+      throw new BadRequestException('auditLayer1 debe ser true o false');
+    }
     if (settings.analysisDepth !== undefined && settings.analysisDepth !== 'standard' && settings.analysisDepth !== 'deep') {
       throw new BadRequestException('analysisDepth debe ser "standard" o "deep"');
     }
@@ -156,13 +161,14 @@ export class DashboardService {
         settings.autoMergeOnGreen,
         settings.ignoredPushBranches,
         settings.analysisDepth,
+        settings.auditLayer1,
       ].some((v) => v !== undefined);
       if (hasChanges) {
         await client.query(
           `INSERT INTO quality_gate_configs
              (organization_id, repository_id, promotion_source_branch, promotion_target_branch,
-              auto_create_pr_on_push, notify_author_on_push, auto_merge_on_green, ignored_push_branches, analysis_depth)
-           VALUES ($1, $2, COALESCE($3, 'staging'), COALESCE($4, 'main'), COALESCE($5, false), COALESCE($6, true), COALESCE($7, false), $8, COALESCE($9, 'standard'))
+              auto_create_pr_on_push, notify_author_on_push, auto_merge_on_green, ignored_push_branches, analysis_depth, audit_layer1)
+           VALUES ($1, $2, COALESCE($3, 'staging'), COALESCE($4, 'main'), COALESCE($5, false), COALESCE($6, true), COALESCE($7, false), $8, COALESCE($9, 'standard'), COALESCE($10, false))
            ON CONFLICT (organization_id, repository_id) DO UPDATE
              SET promotion_source_branch = COALESCE($3, quality_gate_configs.promotion_source_branch),
                  promotion_target_branch = COALESCE($4, quality_gate_configs.promotion_target_branch),
@@ -170,7 +176,8 @@ export class DashboardService {
                  notify_author_on_push = COALESCE($6, quality_gate_configs.notify_author_on_push),
                  auto_merge_on_green = COALESCE($7, quality_gate_configs.auto_merge_on_green),
                  ignored_push_branches = COALESCE($8, quality_gate_configs.ignored_push_branches),
-                 analysis_depth = COALESCE($9, quality_gate_configs.analysis_depth)`,
+                 analysis_depth = COALESCE($9, quality_gate_configs.analysis_depth),
+                 audit_layer1 = COALESCE($10, quality_gate_configs.audit_layer1)`,
           [
             orgId,
             repositoryId,
@@ -181,6 +188,7 @@ export class DashboardService {
             settings.autoMergeOnGreen ?? null,
             settings.ignoredPushBranches ?? null,
             settings.analysisDepth ?? null,
+            settings.auditLayer1 ?? null,
           ],
         );
       }
@@ -497,7 +505,21 @@ export class DashboardService {
          WHERE f.review_run_id = $1 ORDER BY fc.created_at, fc.id`,
         [reviewRunId],
       );
-      return { ...run, findings: findingRows, clarifications: clarificationRows };
+      // Capa 1 de la auditoría (si estaba activa en esta revisión): qué escáneres corrieron y qué reportaron.
+      const { rows: scannerRuns } = await client.query(
+        `SELECT tool, status, mandatory, reason, scanner_version, image_digest, ruleset, ruleset_pinned, duration_ms, error, findings_count
+         FROM scanner_runs WHERE review_run_id = $1 ORDER BY tool`,
+        [reviewRunId],
+      );
+      const { rows: scanFindings } = await client.query(
+        `SELECT id, tool, sources, rule_id, severity, category, file_path, line_start, line_end, title, message, evidence, vuln_id, cwe,
+                package_name, installed_version, fixed_version, baseline_status, validation_status
+         FROM scan_findings WHERE review_run_id = $1
+         ORDER BY (CASE severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) DESC,
+                  (baseline_status = 'new') DESC, file_path, line_start LIMIT 500`,
+        [reviewRunId],
+      );
+      return { ...run, findings: findingRows, clarifications: clarificationRows, scanner_runs: scannerRuns, scan_findings: scanFindings };
     });
   }
 

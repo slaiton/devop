@@ -4,6 +4,7 @@ import parseDiff from 'parse-diff';
 import { GateBadge } from '../../../GateBadge';
 import { getSession } from '../../../session';
 import { AnalysisTrace, type AnalysisStats, type LlmFailover, type TraceEntry } from './AnalysisTrace';
+import { ScannerReport, type AuditCoverage, type ScanFindingRow, type ScannerRunRow } from './ScannerReport';
 import { ClarificationThread, type ClarificationMessage } from './ClarificationThread';
 import { ReconsiderFindingButton } from './ReconsiderFindingButton';
 
@@ -55,6 +56,10 @@ interface ReviewRunDetail {
   pull_request_title: string | null;
   findings: Finding[];
   clarifications: ClarificationMessage[];
+  audit_stage: string | null;
+  audit_coverage: AuditCoverage | null;
+  scanner_runs: ScannerRunRow[];
+  scan_findings: ScanFindingRow[];
 }
 
 const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
@@ -173,6 +178,8 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
         llmModel={run.llm_model}
         llmFailovers={run.llm_failovers}
       />
+
+      <ScannerReport runs={run.scanner_runs} findings={run.scan_findings} coverage={run.audit_coverage} stage={run.audit_stage} />
 
       {run.analyzed_files && run.analyzed_files.length > 0 && (
         <>
