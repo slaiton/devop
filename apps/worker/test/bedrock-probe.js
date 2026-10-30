@@ -112,7 +112,18 @@ const reason = (r) => `HTTP ${r.status}: ${(r.json?.error?.message ?? r.text).to
   });
   const toolCall = r.json?.choices?.[0]?.message?.tool_calls?.[0];
   check('5. llamada a funciones (necesaria para el análisis profundo)', r.status === 200 && toolCall?.function?.name === 'read_file', r.status === 200 ? JSON.stringify(toolCall ?? 'el modelo no pidió la herramienta') : reason(r));
-  if (!toolCall && r.status !== 200) console.log('   → sin esto el análisis profundo cae al modo estándar (el código ya lo gestiona).');
+  if (r.status !== 200) {
+    // Con razonamiento activo (por defecto) Bedrock no admite herramientas en /chat/completions; con 'none' sí.
+    r = await call('/chat/completions', {
+      model: MODEL,
+      reasoning_effort: 'none',
+      messages: [{ role: 'user', content: 'Lee el archivo src/app.ts usando la herramienta.' }],
+      tools: [{ type: 'function', function: { name: 'read_file', description: 'Lee un archivo del repo', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } }],
+      tool_choice: 'auto',
+    });
+    const tc = r.json?.choices?.[0]?.message?.tool_calls?.[0];
+    check('5b. herramientas con reasoning_effort=none (lo que usa DevSentinel en el análisis profundo)', r.status === 200 && tc?.function?.name === 'read_file', r.status === 200 ? JSON.stringify(tc ?? 'el modelo no pidió la herramienta') : reason(r));
+  }
 
   // 6) Esfuerzo de razonamiento (controla tokens de salida y costo)
   r = await call('/chat/completions', { model: MODEL, reasoning_effort: 'low', messages: [{ role: 'user', content: 'Responde solo: ok' }] });

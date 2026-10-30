@@ -16,6 +16,7 @@ Este directorio contiene la propuesta de arquitectura completa, lista para servi
 | 06 | [Estructura de carpetas](06-estructura-carpetas.md) | Organización del monorepo y de cada servicio |
 | 07 | [Roadmap](07-roadmap.md) | MVP → V1 → V2 → Enterprise, con alcance y métricas de éxito por fase |
 | 08 | [Stack del MVP (Fase 0)](08-mvp-fase0-stack.md) | Decisiones ya cerradas para la primera fase: solo GitHub, IA open-source vía inferencia administrada, monolito modular, Docker Compose |
+| 09 | [Auditoría por tres capas](09-auditoria-tres-capas.md) | Propuesta: escáneres deterministas → GPT-5.6 Luna (triage) → GPT-5.6 Sol (auditoría profunda) vía Amazon Bedrock, con política determinista, costos y presupuestos |
 
 ## Resumen ejecutivo
 

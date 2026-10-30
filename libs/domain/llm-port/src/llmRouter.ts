@@ -242,9 +242,10 @@ export function buildRoutedProvider(config: ProviderConfigLike): RoutedProvider 
     cooldownKey: `${config.id}:${createHash('sha1').update(`${config.baseUrl}|${config.model}|${config.apiKey ?? ''}`).digest('hex').slice(0, 10)}`,
     llm: new OpenAiCompatibleLlmAdapter(config.model, config.baseUrl, config.apiKey ?? '', embedLocally, {
       temperature: temperatureFor(config.kind, config.model),
-      // La documentación de Bedrock solo describe `json_schema` para la salida estructurada: no se envía `json_object`;
-      // el prompt ya exige JSON y la respuesta se valida con el esquema (con un reintento si no cumple).
-      jsonObjectFormat: config.kind !== 'bedrock',
+      // Bedrock (GPT-5.6 Sol): en /chat/completions las herramientas no se admiten con razonamiento activo
+      // ("Function tools with reasoning_effort are not supported… set reasoning_effort to 'none'"). Las rondas de
+      // investigación del análisis profundo van sin razonamiento; el análisis estándar conserva el razonamiento por defecto.
+      toolReasoningEffort: config.kind === 'bedrock' ? 'none' : undefined,
     }),
   };
 }

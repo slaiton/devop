@@ -46,19 +46,19 @@ function truncate(text: string, max = 500): string {
 export class OpenAiCompatibleLlmAdapter implements LlmPort {
   private readonly client: OpenAI;
   private readonly temperature: number | null;
-  private readonly jsonObjectFormat: boolean;
+  private readonly toolReasoningEffort: string | undefined;
 
   constructor(
     private readonly model: string,
     baseURL: string,
     apiKey: string,
     private readonly embeddingFn: (text: string) => Promise<number[]>,
-    options: { temperature?: number | null; jsonObjectFormat?: boolean } = {},
+    options: { temperature?: number | null; toolReasoningEffort?: string } = {},
   ) {
     this.client = new OpenAI({ baseURL, apiKey });
     // null = no enviar el parámetro (los modelos de razonamiento de OpenAI solo aceptan el valor por defecto)
     this.temperature = options.temperature === undefined ? 0.1 : options.temperature;
-    this.jsonObjectFormat = options.jsonObjectFormat ?? true;
+    this.toolReasoningEffort = options.toolReasoningEffort;
   }
 
   async reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> {
@@ -131,7 +131,15 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       let completion;
       try {
         completion = await this.client.chat.completions.create(
-          { model: this.model, messages, tools, tool_choice: 'auto', ...(this.temperature === null ? {} : { temperature: this.temperature }) },
+          {
+            model: this.model,
+            messages,
+            tools,
+            tool_choice: 'auto',
+            ...(this.temperature === null ? {} : { temperature: this.temperature }),
+            // 'none' no figura en los tipos del SDK, pero Bedrock lo acepta (y lo exige para usar herramientas).
+            ...(this.toolReasoningEffort ? ({ reasoning_effort: this.toolReasoningEffort } as object) : {}),
+          },
           { timeout: Math.max(5_000, Math.min(remainingMs, 120_000)) },
         );
       } catch (err) {
@@ -277,7 +285,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       completion = await this.client.chat.completions.create({
         model: this.model,
         messages,
-        ...(this.jsonObjectFormat ? { response_format: { type: 'json_object' as const } } : {}),
+        response_format: { type: 'json_object' },
         ...(this.temperature === null ? {} : { temperature: this.temperature }),
       });
     } catch (err) {
