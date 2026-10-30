@@ -260,6 +260,24 @@ precios y agrega una fila cuando cambien; el contexto de más de 272K tokens se 
 se puede contabilizar ni limitar (se avisa). La página de cada commit muestra el consumo por capa y su total. Variables opcionales:
 `AUDIT_L2_REASONING` (esfuerzo de razonamiento, `low`), `AUDIT_L2_MAX_OUTPUT_TOKENS` (8000), `AUDIT_L2_MAX_DIFF_CHARS` (60000).
 
+### Commits muy grandes: límites y rendimiento
+
+**Entrada del modelo.** Un commit enorme (lockfiles, código generado, cientos de archivos) ya no viaja entero al modelo: Bedrock respondía
+`400 Your input exceeds the context window of this model` y, además, por encima de 272K tokens de entrada cobra el doble. Antes de cada
+revisión la entrada se ajusta a un presupuesto (`LLM_MAX_INPUT_TOKENS`, 150000 por defecto):
+- los **lockfiles, archivos generados, minificados, binarios y vendor** se resumen en una línea (los escáneres ya cubren las dependencias);
+- el parche de un archivo de código gigante se recorta (30.000 caracteres) y **lo que no cabe se omite entero**, nombrándolo en el prompt;
+- se acotan la lista de archivos (300), los hallazgos de analizadores (100), el contexto recuperado y el historial de commits.
+Si hubo que dejar código fuera, la revisión es **parcial**: queda en *requiere revisión* (nunca APTO), lo dice la nota del commit y el check de GitHub.
+Si el modelo aun así rechaza la entrada por tamaño, se reintenta con la mitad y luego con la cuarta parte del presupuesto. Ese rechazo **no es una
+falla del agente**: no lo pausa ni lo marca como caído en Configuración. Un cambio que solo trae lockfiles y generados se resume y puede ser APTO.
+
+**Página del commit.** El resumen y los hallazgos se muestran de inmediato; el diff se carga aparte (Suspense). Por defecto se pintan hasta 60
+archivos / 4.000 líneas (los archivos con hallazgos siempre, los lockfiles colapsados); `?diff=all` amplía el límite. La API guarda el diff en
+memoria (un commit es inmutable) y lo acota a `DIFF_MAX_CHARS` (2.000.000) sin partir archivos ni recortar los que tienen hallazgos. La pantalla de
+preguntas de la IA consulta un estado mínimo cada 3 s y solo recarga la página cuando algo cambia. Con un commit de 5,9 MB: primer contenido de
+3,2 s a 0,2 s; diff pintado de 10,8 s a 1,1 s; nodos del DOM de 188.000 a 23.000; recargar ya no vuelve a pedir el diff a GitHub.
+
 ### Análisis estándar y profundo
 
 Cada repositorio tiene, en **Configuración**, su **profundidad del análisis**:

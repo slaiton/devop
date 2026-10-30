@@ -30,6 +30,8 @@ export interface Layer2Outcome {
   /** Política de presupuesto vigente cuando se omitió por presupuesto (para aplicarla al veredicto). */
   budgetPolicy: AuditBudget['policy'] | null;
   omittedFindings: number;
+  /** El triaje no vio todo el código (cambio demasiado grande): la revisión derivada es parcial y no puede salir APTO. */
+  partial: boolean;
   /** Lo decide el flujo de revisión: true si esta capa produjo la revisión final del commit. */
   usedAsReview: boolean;
 }
@@ -85,6 +87,7 @@ export class Layer2Service {
       durationMs: 0,
       budgetPolicy: null,
       omittedFindings: 0,
+      partial: false,
       usedAsReview: false,
     };
     // Antes de cerrar se espera a que el consumo de esta capa esté guardado: el costo del resumen sale de ahí.
@@ -117,6 +120,7 @@ export class Layer2Service {
       recentCommits: params.recentCommits,
     });
     base.omittedFindings = ctx.omittedFindings;
+    base.partial = ctx.partial;
 
     // ---- presupuesto: se comprueba ANTES de llamar al modelo, con una cota superior del costo de esta llamada
     const pool = getPool();

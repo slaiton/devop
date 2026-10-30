@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import parseDiff from 'parse-diff';
@@ -131,12 +132,12 @@ function FindingRow({ f, repositoryId, reviewRunId }: { f: Finding; repositoryId
   );
 }
 
-export default async function ReviewRunDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ReviewRunDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ diff?: string }> }) {
   const { id } = await params;
-  const [run, diffResponse] = await Promise.all([
-    fetchJson<ReviewRunDetail | null>(`/dashboard/review-runs/${id}`),
-    fetchJson<{ diff: string }>(`/dashboard/review-runs/${id}/diff`),
-  ]);
+  const { diff: diffMode } = await searchParams;
+  // El diff ya NO bloquea la página: se pide y se pinta aparte (Suspense). Un commit enorme no retrasa el resumen, los hallazgos ni
+  // el informe de la auditoría.
+  const run = await fetchJson<ReviewRunDetail | null>(`/dashboard/review-runs/${id}`);
 
   if (!run) {
     return <p>Review run no encontrado.</p>;
@@ -144,7 +145,6 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
 
   const session = await getSession();
   const isAdmin = session?.role === 'admin';
-  const files = parseDiff(diffResponse.diff ?? '');
 
   // Las preguntas de la IA van aparte: no son hallazgos confirmados y todavía no bloquean.
   const questions = run.findings.filter((f) => f.status === 'awaiting_clarification');
@@ -312,44 +312,157 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
       )}
 
       <h1>Diff</h1>
-      {files.length === 0 && <p>No se pudo obtener el diff de este commit.</p>}
+      <Suspense fallback={<p className="scan-note" role="status">Cargando el diff…</p>}>
+        <DiffSection run={run} showAll={diffMode === 'all'} />
+      </Suspense>
+    </>
+  );
+}
 
-      {files.map((file, fileIdx) => {
-        const filePath = file.to && file.to !== '/dev/null' ? file.to : file.from ?? '(desconocido)';
-        const fileFindings = run.findings.filter((f) => f.file_path === filePath);
+/** Lo que se pinta por defecto del diff: un commit enorme (lockfiles, código generado, cientos de archivos) generaba cientos de miles de
+ * nodos y volvía lenta la página. Con `?diff=all` se muestra mucho más (con tope). Los archivos con hallazgos siempre se muestran. */
+const DIFF_LIMITS = {
+  default: { files: 60, lines: 4000, perFile: 600 },
+  all: { files: 400, lines: 40000, perFile: 5000 },
+};
+
+/** Debe mantenerse igual que `isLowValueFile` del worker (apps/worker/src/modules/review/inputBudget.ts). */
+function isLowValueFile(path: string): boolean {
+  const p = path.toLowerCase();
+  const name = p.split('/').pop() ?? p;
+  return (
+    /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|composer\.lock|gemfile\.lock|go\.sum|poetry\.lock|pipfile\.lock|uv\.lock|cargo\.lock|packages\.lock\.json|mix\.lock|pubspec\.lock|podfile\.lock|gradle\.lockfile)$/.test(p) ||
+    /\.(lock|min\.js|min\.css|map|snap|svg|png|jpe?g|gif|webp|ico|pdf|woff2?|ttf|eot|zip|gz|tgz|jar|class|exe|dll|so|bin|mp4|mov)$/.test(name) ||
+    /(^|\/)(node_modules|vendor|dist|build|\.next|__snapshots__|coverage|\.yarn)\//.test(p) ||
+    /(\.generated\.|_pb2\.py$|\.pb\.go$|\.g\.dart$|\.designer\.cs$)/.test(name)
+  );
+}
+
+interface DiffResponse {
+  diff: string;
+  truncated?: boolean;
+  totalChars?: number;
+  omittedFiles?: string[];
+}
+
+async function DiffSection({ run, showAll }: { run: ReviewRunDetail; showAll: boolean }) {
+  let response: DiffResponse;
+  try {
+    response = await fetchJson<DiffResponse>(`/dashboard/review-runs/${run.id}/diff`);
+  } catch {
+    return <p>No se pudo obtener el diff de este commit.</p>;
+  }
+  const files = parseDiff(typeof response.diff === 'string' ? response.diff : '');
+  if (files.length === 0) return <p>No se pudo obtener el diff de este commit.</p>;
+
+  const limits = showAll ? DIFF_LIMITS.all : DIFF_LIMITS.default;
+  const githubUrl = `https://github.com/${run.repository_full_name}/commit/${run.commit_sha}`;
+  const pathOf = (file: (typeof files)[number]) => (file.to && file.to !== '/dev/null' ? file.to : file.from ?? '(desconocido)');
+  const totalLines = files.reduce((n, f) => n + f.additions + f.deletions, 0);
+  const findingPaths = new Set(run.findings.map((f) => f.file_path));
+
+  // Qué archivos se pintan completos, cuáles colapsados y cuáles quedan fuera (siempre se pintan los que tienen hallazgos).
+  let budget = limits.lines;
+  let shown = 0;
+  const plan = files.map((file) => {
+    const path = pathOf(file);
+    const lines = file.additions + file.deletions;
+    const withFindings = findingPaths.has(path);
+    const lowValue = isLowValueFile(path) && !withFindings;
+    let mode: 'full' | 'collapsed' | 'omitted' = 'full';
+    if (lowValue) mode = 'collapsed';
+    else if (!withFindings && (shown >= limits.files || budget <= 0)) mode = 'omitted';
+    if (mode === 'full') {
+      shown += 1;
+      budget -= Math.min(lines, limits.perFile);
+    }
+    return { file, path, lines, mode };
+  });
+  const omitted = plan.filter((x) => x.mode === 'omitted');
+  const collapsed = plan.filter((x) => x.mode === 'collapsed');
+  const trimmedByApi = response.truncated === true;
+
+  return (
+    <>
+      <p className="scan-note">
+        {trimmedByApi
+          ? `El commit modifica ${(files.length + (response.omittedFiles?.length ?? 0)).toLocaleString('es')} archivo(s); aquí se cargaron ${files.length} (${totalLines.toLocaleString('es')} líneas cambiadas)`
+          : `${files.length} archivo(s) modificado(s) · ${totalLines.toLocaleString('es')} líneas cambiadas`}
+        {omitted.length + collapsed.length > 0 && !showAll && (
+          <>
+            {' '}
+            · se muestran completos {plan.filter((x) => x.mode === 'full').length}
+            {collapsed.length > 0 ? `; ${collapsed.length} de bajo valor (lockfiles, generados) están colapsados` : ''}
+            {omitted.length > 0 ? `; ${omitted.length} no se muestran por el tamaño del cambio` : ''}.{' '}
+            <Link href={`/review-runs/${run.id}?diff=all`}>Ver mucho más del diff</Link>
+          </>
+        )}
+        {showAll && (
+          <>
+            {' '}
+            · <Link href={`/review-runs/${run.id}`}>Volver a la vista resumida</Link>
+          </>
+        )}{' '}
+        · <a href={githubUrl} target="_blank" rel="noreferrer">Verlo completo en GitHub</a>
+      </p>
+      {trimmedByApi && (
+        <p className="scan-banner scan-banner-warn" role="status">
+          El diff completo pesa {((response.totalChars ?? 0) / 1048576).toFixed(1)} MB y se recortó para mostrarlo
+          {response.omittedFiles && response.omittedFiles.length > 0
+            ? `: no se incluyen ${response.omittedFiles.length} archivo(s) (${response.omittedFiles.slice(0, 40).join(', ')}${response.omittedFiles.length > 40 ? '…' : ''})`
+            : ''}
+          . Los archivos con hallazgos siempre se incluyen. Ábrelo en GitHub para verlo entero.
+        </p>
+      )}
+
+      {plan.map(({ file, path, lines, mode }, fileIdx) => {
+        if (mode === 'omitted') return null;
+        if (mode === 'collapsed') {
+          return (
+            <div key={fileIdx} className="diff-file">
+              <div className="diff-file-header">
+                {path} <span className="scan-note">— {lines.toLocaleString('es')} líneas · archivo de bajo valor (lockfile, generado o de recursos): no se muestra</span>
+              </div>
+            </div>
+          );
+        }
+        const fileFindings = run.findings.filter((f) => f.file_path === path);
+        let rendered = 0;
+        const rows: React.ReactElement[] = [];
+        for (let chunkIdx = 0; chunkIdx < file.chunks.length && rendered < limits.perFile; chunkIdx++) {
+          const chunk = file.chunks[chunkIdx];
+          for (let changeIdx = 0; changeIdx < chunk.changes.length && rendered < limits.perFile; changeIdx++) {
+            const change = chunk.changes[changeIdx];
+            rendered += 1;
+            const newLine = change.type === 'add' ? change.ln : change.type === 'normal' ? change.ln2 : undefined;
+            const lineFindings = newLine && fileFindings.length > 0 ? findingsForLine(fileFindings, path, newLine) : [];
+            const worstSeverity = lineFindings[0]?.severity;
+            const rowClass = worstSeverity ? `diff-finding-${worstSeverity}` : change.type === 'add' ? 'diff-add' : change.type === 'del' ? 'diff-del' : '';
+            rows.push(
+              <tr key={`${chunkIdx}-${changeIdx}`} className={rowClass || undefined}>
+                <td className="diff-line-num">{change.type === 'add' ? change.ln : change.type === 'normal' ? change.ln2 : ''}</td>
+                <td>
+                  {change.type === 'add' ? '+' : change.type === 'del' ? '-' : ' '}
+                  {change.content.replace(/^[+-]/, '')}
+                </td>
+              </tr>,
+            );
+          }
+        }
+        const totalChanges = file.chunks.reduce((n, c) => n + c.changes.length, 0);
 
         return (
           <div key={fileIdx} className="diff-file">
-            <div className="diff-file-header">{filePath}</div>
+            <div className="diff-file-header">{path}</div>
             <table className="diff-table">
-              <tbody>
-                {file.chunks.map((chunk, chunkIdx) =>
-                  chunk.changes.map((change, changeIdx) => {
-                    const newLine = change.type === 'add' ? change.ln : change.type === 'normal' ? change.ln2 : undefined;
-                    const lineFindings = newLine ? findingsForLine(fileFindings, filePath, newLine) : [];
-                    const worstSeverity = lineFindings[0]?.severity;
-
-                    const rowClass = [
-                      worstSeverity ? `diff-finding-${worstSeverity}` : change.type === 'add' ? 'diff-add' : change.type === 'del' ? 'diff-del' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ');
-
-                    return (
-                      <tr key={`${chunkIdx}-${changeIdx}`} className={rowClass || undefined}>
-                        <td className="diff-line-num">
-                          {change.type === 'add' ? change.ln : change.type === 'normal' ? change.ln2 : ''}
-                        </td>
-                        <td>
-                          {change.type === 'add' ? '+' : change.type === 'del' ? '-' : ' '}
-                          {change.content.replace(/^[+-]/, '')}
-                        </td>
-                      </tr>
-                    );
-                  }),
-                )}
-              </tbody>
+              <tbody>{rows}</tbody>
             </table>
+            {totalChanges > rendered && (
+              <p className="scan-note">
+                … {(totalChanges - rendered).toLocaleString('es')} líneas más en este archivo.{' '}
+                {!showAll && <Link href={`/review-runs/${run.id}?diff=all`}>Ver más</Link>}
+              </p>
+            )}
 
             {fileFindings.length > 0 && (
               <div className="diff-findings-list">
@@ -364,6 +477,13 @@ export default async function ReviewRunDetailPage({ params }: { params: Promise<
           </div>
         );
       })}
+
+      {omitted.length > 0 && (
+        <p className="scan-note">
+          Archivos que no se muestran ({omitted.length}): {omitted.slice(0, 40).map((x) => x.path).join(', ')}
+          {omitted.length > 40 ? '…' : ''}
+        </p>
+      )}
     </>
   );
 }

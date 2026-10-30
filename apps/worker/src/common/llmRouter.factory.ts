@@ -23,9 +23,9 @@ function usageHandler(ctx?: UsageContext) {
   return new UsageSink({ organizationId: ctx.organizationId, reviewRunId: ctx.reviewRunId, repositoryId: ctx.repositoryId }).handler(ctx.purpose);
 }
 
-const onAttempt = (pool: ReturnType<typeof getPool>) => async (record: { unsupported?: boolean; providerId: string; ok: boolean; error?: string }) => {
-  // Que un agente no soporte herramientas no es una falla del agente: no se anota como error.
-  if (record.unsupported) return;
+const onAttempt = (pool: ReturnType<typeof getPool>) => async (record: { unsupported?: boolean; inputTooLarge?: boolean; providerId: string; ok: boolean; error?: string }) => {
+  // Que un agente no soporte herramientas, o que la entrada no le quepa, no es una falla del agente: no se anota como error.
+  if (record.unsupported || record.inputTooLarge) return;
   await recordLlmProviderResult(pool, record.providerId, record.ok, record.error);
 };
 

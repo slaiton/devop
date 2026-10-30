@@ -270,7 +270,7 @@ export function buildReconsiderFindingPrompt(input: ReconsiderFindingInput) {
     '',
     '## Diff completo del commit (evidencia real, no confíes solo en el comentario)',
     '```diff',
-    input.diff,
+    input.diff.length > 60_000 ? `${input.diff.slice(0, 60_000)}\n[...diff recortado]` : input.diff,
     '```',
   ].join('\n');
 

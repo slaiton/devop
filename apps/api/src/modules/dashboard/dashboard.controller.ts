@@ -69,8 +69,18 @@ export class DashboardController {
     @CurrentRole() role: string,
     @Param('reviewRunId') reviewRunId: string,
   ) {
-    const diff = await this.dashboardService.getReviewRunDiff(orgId, reviewRunId, { userId, role });
-    return { diff };
+    // { diff, truncated, totalChars, omittedFiles }: un diff enorme llega recortado por archivos y la página lo dice.
+    return this.dashboardService.getReviewRunDiff(orgId, reviewRunId, { userId, role });
+  }
+
+  @Get('findings/:findingId/clarification-state')
+  getClarificationState(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() userId: string,
+    @CurrentRole() role: string,
+    @Param('findingId', ParseUUIDPipe) findingId: string,
+  ) {
+    return this.dashboardService.getClarificationState(orgId, findingId, { userId, role });
   }
 
   // ---- Repos: lectura abierta a admin y a "user" con el repo asignado ----

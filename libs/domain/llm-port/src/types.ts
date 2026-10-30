@@ -267,6 +267,25 @@ export interface AgenticReviewOutcome {
   stats: AgenticReviewStats;
 }
 
+/** La entrada supera la ventana de contexto del modelo ("Your input exceeds the context window of this model"). No es una falla del
+ * agente (ni de su clave, cuota o servicio): es culpa del tamaño de lo enviado. Por eso no lo penaliza (sin pausa ni marca de error) y el
+ * llamador puede reintentar con una entrada más pequeña. */
+export class LlmContextOverflowError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LlmContextOverflowError';
+  }
+}
+
+const CONTEXT_OVERFLOW = /context (window|length)|maximum context|exceeds? (the )?(model'?s )?(maximum|context|token)|too (long|large)|reduce the length|context_length_exceeded|token limit/i;
+
+/** ¿Este error del proveedor significa "la entrada no cabe"? (HTTP 400/413 con ese mensaje). */
+export function isContextOverflow(err: unknown): boolean {
+  const e = err as { status?: number; message?: string; code?: string };
+  if (e?.code === 'context_length_exceeded') return true;
+  return (e?.status === 400 || e?.status === 413) && CONTEXT_OVERFLOW.test(String(e?.message ?? ''));
+}
+
 /** El proveedor/modelo configurado no acepta herramientas (function calling): el llamador debe
  * caer al análisis estándar en vez de fallar la revisión. */
 export class AgenticReviewUnsupportedError extends Error {

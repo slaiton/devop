@@ -4,6 +4,7 @@ import { OpenAiCompatibleLlmAdapter } from './openAiCompatibleAdapter';
 import { embedLocally } from './localEmbeddings';
 import {
   AgenticReviewUnsupportedError,
+  LlmContextOverflowError,
   type AgentToolbox,
   type AgenticReviewOptions,
   type AgenticReviewOutcome,
@@ -46,6 +47,8 @@ export interface LlmCallRecord {
   error?: string;
   /** El agente no soporta herramientas: no es una falla del servicio, no lo penaliza. */
   unsupported?: boolean;
+  /** La entrada no cabe en la ventana de contexto del modelo: culpa del tamaño de lo enviado, no del agente; no lo penaliza. */
+  inputTooLarge?: boolean;
   ms: number;
 }
 
@@ -153,6 +156,7 @@ export class LlmRouter implements LlmPort {
     if (this.providers.length === 0) throw new LlmNotConfiguredError();
     const failures: { provider: string; error: string }[] = [];
     let onlyUnsupported = true;
+    let onlyOverflow = true;
 
     for (const p of this.order()) {
       const started = this.now();
@@ -163,14 +167,19 @@ export class LlmRouter implements LlmPort {
         return result;
       } catch (err) {
         const unsupported = err instanceof AgenticReviewUnsupportedError;
-        if (!unsupported) {
-          onlyUnsupported = false;
-          this.cooldowns.set(this.keyOf(p), this.now() + this.cooldownMs);
-        }
-        const error = unsupported ? 'no soporta herramientas (function calling)' : short(err);
+        const inputTooLarge = err instanceof LlmContextOverflowError;
+        if (!unsupported) onlyUnsupported = false;
+        if (!inputTooLarge) onlyOverflow = false;
+        // Ni "no soporta herramientas" ni "la entrada no cabe" son fallas del agente: no se pausa.
+        if (!unsupported && !inputTooLarge) this.cooldowns.set(this.keyOf(p), this.now() + this.cooldownMs);
+        const error = unsupported ? 'no soporta herramientas (function calling)' : inputTooLarge ? 'la entrada supera la ventana de contexto del modelo' : short(err);
         failures.push({ provider: p.name, error });
-        await this.record({ method, providerId: p.id, provider: p.name, model: p.model, ok: false, error, unsupported, ms: this.now() - started });
+        await this.record({ method, providerId: p.id, provider: p.name, model: p.model, ok: false, error, unsupported, inputTooLarge, ms: this.now() - started });
       }
+    }
+    // Si NINGÚN agente pudo con el tamaño, el llamador debe reducir la entrada y reintentar (no es una caída de los agentes).
+    if (onlyOverflow && failures.length > 0) {
+      throw new LlmContextOverflowError(`la entrada no cabe en la ventana de contexto de ningún agente: ${failures.map((f) => f.provider).join(', ')}`);
     }
     if (onlyUnsupported) {
       throw new AgenticReviewUnsupportedError(`ningún agente activo soporta herramientas: ${failures.map((f) => f.provider).join(', ')}`);

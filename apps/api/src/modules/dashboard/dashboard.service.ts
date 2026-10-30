@@ -13,6 +13,7 @@ import {
   type ReconsiderJobPayload,
 } from '@devsentinel/event-contracts';
 import { EmailService } from '../../common/email.service';
+import { DiffCache, capDiff, type CappedDiff } from './diffCache';
 import { NOTIFICATION_SOUNDS, isNotificationSound } from '../notifications/sounds';
 
 interface Actor {
@@ -21,6 +22,11 @@ interface Actor {
 }
 
 const SEVERITY_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+
+/** Diffs ya pedidos a GitHub (compartida por todas las peticiones de este proceso). */
+const diffCache = new DiffCache();
+/** Lo máximo del diff que se manda a la página; el resto se informa como omitido (DIFF_MAX_CHARS lo cambia). */
+const MAX_DIFF_CHARS = Number(process.env.DIFF_MAX_CHARS) || 2_000_000;
 
 @Injectable()
 export class DashboardService {
@@ -552,7 +558,9 @@ export class DashboardService {
     });
   }
 
-  async getReviewRunDiff(orgId: string, reviewRunId: string, actor: Actor): Promise<string> {
+  /** Diff del commit (o del PR) para la página de detalle. Se guarda en memoria: el diff de un commit no cambia, y pedirlo a GitHub en
+   * cada visita y en cada refresco era lo que volvía lenta la página. Se acota a MAX_DIFF_CHARS sin partir archivos. */
+  async getReviewRunDiff(orgId: string, reviewRunId: string, actor: Actor): Promise<CappedDiff> {
     return withTenant(orgId, async (client) => {
       const { rows } = await client.query(
         `SELECT rr.repository_id, rr.developer_id, rr.commit_sha, r.full_name, gi.installation_id, pr.github_pr_number
@@ -571,9 +579,17 @@ export class DashboardService {
       const installationId = Number(run.installation_id);
       const adapter = await buildGithubAdapterForInstallation(client, installationId);
 
-      return run.github_pr_number
-        ? adapter.getPullRequestDiff({ installationId, owner, repo, pullNumber: run.github_pr_number })
-        : adapter.getCommitDiff({ installationId, owner, repo, commitSha: run.commit_sha });
+      // Un commit es inmutable (se guarda horas); el diff de un PR puede cambiar con cada push (se guarda un par de minutos).
+      const key = run.github_pr_number ? `${installationId}:${run.full_name}:pr:${run.github_pr_number}` : `${installationId}:${run.full_name}:${run.commit_sha}`;
+      const ttl = run.github_pr_number ? 2 * 60_000 : 6 * 3_600_000;
+      const full = await diffCache.get(key, ttl, () =>
+        run.github_pr_number
+          ? adapter.getPullRequestDiff({ installationId, owner, repo, pullNumber: run.github_pr_number })
+          : adapter.getCommitDiff({ installationId, owner, repo, commitSha: run.commit_sha }),
+      );
+      // Los archivos con hallazgos de esta revisión nunca se recortan: son los que el usuario quiere ver.
+      const { rows: findingFiles } = await client.query('SELECT DISTINCT file_path FROM findings WHERE review_run_id = $1', [reviewRunId]);
+      return capDiff(full, MAX_DIFF_CHARS, new Set(findingFiles.map((r) => String(r.file_path))));
     });
   }
 
@@ -606,6 +622,29 @@ export class DashboardService {
       throw new ConflictException('este hallazgo ya no está pendiente de aclaración (la IA o un administrador ya lo resolvió)');
     }
     return rows[0] as { id: string; review_run_id: string; repository_id: string; developer_id: string | null };
+  }
+
+  /** Estado mínimo de una pregunta de la IA (sin diff, sin hallazgos, sin nada pesado): la pantalla lo consulta cada pocos segundos
+   * mientras la IA reevalúa y solo recarga la página completa cuando algo cambió. */
+  async getClarificationState(orgId: string, findingId: string, actor: Actor) {
+    return withTenant(orgId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT f.status, f.needs_human, f.clarification_round, rr.repository_id, rr.developer_id,
+                (SELECT fc.id FROM finding_clarifications fc WHERE fc.finding_id = f.id ORDER BY fc.created_at DESC, fc.id DESC LIMIT 1) AS last_message_id,
+                (SELECT count(*)::int FROM finding_clarifications fc WHERE fc.finding_id = f.id) AS messages
+         FROM findings f JOIN review_runs rr ON rr.id = f.review_run_id WHERE f.id = $1`,
+        [findingId],
+      );
+      if (!rows[0]) throw new NotFoundException('hallazgo no encontrado');
+      await this.assertCanViewReviewRun(client, rows[0], actor);
+      return {
+        status: rows[0].status,
+        needs_human: rows[0].needs_human,
+        round: rows[0].clarification_round,
+        last_message_id: rows[0].last_message_id,
+        messages: rows[0].messages,
+      };
+    });
   }
 
   /** El desarrollador responde la pregunta de la IA: queda en la conversación y se encola la re-evaluación. */

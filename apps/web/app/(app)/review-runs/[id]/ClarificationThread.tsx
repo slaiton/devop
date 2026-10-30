@@ -63,7 +63,20 @@ export function ClarificationThread({
   // La última palabra es de una persona: la IA está (o estará enseguida) reevaluando.
   const evaluating = (last?.role === 'developer' || waiting) && !finding.needs_human;
 
-  const poll = useCallback(() => router.refresh(), [router]);
+  // Mientras la IA reevalúa se consulta un estado MÍNIMO (sin diff ni hallazgos); la página completa solo se recarga cuando algo cambió.
+  // Recargarla entera cada 3 s volvía a pedir y a pintar el diff completo del commit.
+  const lastId = last?.id ?? null;
+  const poll = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/dashboard/findings/${finding.id}/clarification-state`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const state = (await res.json()) as { status: string; needs_human: boolean; round: number; last_message_id: string | null };
+      const changed = state.status !== 'awaiting_clarification' || state.last_message_id !== lastId || state.round !== finding.clarification_round || state.needs_human !== finding.needs_human;
+      if (changed) router.refresh();
+    } catch {
+      // sin red: se vuelve a intentar en el siguiente ciclo
+    }
+  }, [router, finding.id, finding.clarification_round, finding.needs_human, lastId]);
   useEffect(() => {
     if (!evaluating) {
       startedWaiting.current = null;
@@ -76,7 +89,7 @@ export function ClarificationThread({
         setWaiting(false);
         return;
       }
-      poll();
+      void poll();
     }, POLL_MS);
     return () => clearInterval(timer);
   }, [evaluating, poll]);

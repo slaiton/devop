@@ -2,7 +2,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import type { ProjectProfile, RecentCommit, TriageCodeContext, TriageInput, TriageScannerFinding } from '@devsentinel/llm-port';
 import { redactSecrets } from '../../../common/redact';
-import { truncateDiff } from '../../review/diffUtils';
+import { fitDiff } from '../../review/inputBudget';
 import { buildSymbolUsages } from '../../review/reviewToolbox';
 import { SEVERITY_ORDER } from '../normalize';
 import type { Layer1Result, NormalizedFinding } from '../types';
@@ -27,6 +27,8 @@ export interface TriageContext {
   refMap: Map<string, NormalizedFinding>;
   /** Cuántos hallazgos de la capa 1 no entraron en el contexto por el tope. */
   omittedFindings: number;
+  /** El modelo no vio todo el código del cambio (archivos omitidos o recortados por tamaño). */
+  partial: boolean;
 }
 
 /** Lee `radius` líneas alrededor de `line` del checkout. Solo rutas relativas dentro del repo, sin binarios; el texto sale redactado. */
@@ -65,7 +67,14 @@ export async function buildTriageContext(params: {
   const { checkoutPath, layer1 } = params;
 
   // El diff se redacta ANTES de salir: si trae un secreto, el modelo no lo ve.
-  const trimmed = truncateDiff(redactSecrets(params.diff), TRIAGE_LIMITS.maxDiffChars);
+  // Además se resumen lockfiles, generados y minificados, y se recortan los parches gigantes (ver inputBudget).
+  const trimmed = fitDiff(redactSecrets(params.diff), TRIAGE_LIMITS.maxDiffChars);
+  const partial = trimmed.omittedFiles.length > 0 || trimmed.truncatedFiles.length > 0;
+  const diffNote = partial
+    ? `el diff era demasiado grande: ${trimmed.omittedFiles.length} archivo(s) de código no aparecen y ${trimmed.truncatedFiles.length} se recortaron`
+    : trimmed.skippedLowValue.length
+      ? `${trimmed.skippedLowValue.length} archivo(s) de bajo valor se resumieron sin su parche`
+      : undefined;
 
   const ranked = [...layer1.findings].sort(
     (a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || Number(b.baseline === 'new') - Number(a.baseline === 'new'),
@@ -107,7 +116,8 @@ export async function buildTriageContext(params: {
   }
 
   const symbolUsages = redactSecrets(
-    (await buildSymbolUsages(checkoutPath, params.diff, params.analyzedFiles).catch(() => '')).slice(0, TRIAGE_LIMITS.maxSymbolUsageChars),
+    // Sobre el diff ya reducido: buscar los usos de cada símbolo de un diff gigante es lentísimo y no aporta.
+    (await buildSymbolUsages(checkoutPath, trimmed.diff, params.analyzedFiles.slice(0, 300)).catch(() => '')).slice(0, TRIAGE_LIMITS.maxSymbolUsageChars),
   );
 
   const missing = layer1.coverage.missing;
@@ -124,7 +134,7 @@ export async function buildTriageContext(params: {
       pullNumber: params.pullNumber,
       changeTags: classifyChange(params.analyzedFiles).map((t) => ({ tag: t.tag, files: t.files })),
       diff: trimmed.diff,
-      diffNote: trimmed.note,
+      diffNote,
       scannerFindings,
       coverageNote,
       codeContext,
@@ -134,5 +144,6 @@ export async function buildTriageContext(params: {
     },
     refMap,
     omittedFindings: Math.max(0, ranked.length - selected.length),
+    partial,
   };
 }

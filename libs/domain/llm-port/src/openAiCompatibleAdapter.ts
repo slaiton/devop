@@ -34,7 +34,7 @@ import {
 } from './prompt';
 import type { LlmPort } from './llmPort';
 import { TRIAGE_JSON_SCHEMA, buildTriagePrompt, triageResultSchema, type TriageInput, type TriageResult } from './triage';
-import type { LlmUsageRecord } from './types';
+import { LlmContextOverflowError, isContextOverflow, type LlmUsageRecord } from './types';
 
 /**
  * Implementa LlmPort contra cualquier proveedor compatible con la API de OpenAI
@@ -163,6 +163,11 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
           { timeout: Math.max(5_000, Math.min(remainingMs, 120_000)) },
         );
       } catch (err) {
+        // Que la entrada no quepa NO significa que el modelo no soporte herramientas: se distingue antes.
+        if (isContextOverflow(err)) {
+          this.reportUsage('agentic', null, roundStarted, err);
+          throw new LlmContextOverflowError((err as Error).message);
+        }
         const status = (err as { status?: number }).status;
         if (rounds === 1 && (status === 400 || status === 404 || status === 422)) {
           throw new AgenticReviewUnsupportedError(
@@ -365,6 +370,7 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     } catch (err) {
       this.reportUsage(method, null, startedAt, err);
       console.error(`[llm-port] fallo llamando al proveedor de inferencia (modelo "${this.model}"): ${(err as Error).message}`);
+      if (isContextOverflow(err)) throw new LlmContextOverflowError((err as Error).message);
       throw err;
     }
     this.reportUsage(method, completion, startedAt);
